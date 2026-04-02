@@ -188,7 +188,9 @@ export function generatePreviewReport(result: PreviewResult, outputPath?: string
   }
 
   // Recommendations
-  lines.push('## 💡 Recommendations');
+  lines.push('## 3. Recommendations');
+  lines.push('');
+  lines.push('### 3.1 Recommended Next Actions');
   lines.push('');
 
   if (highPriorityFailed.length > 0) {

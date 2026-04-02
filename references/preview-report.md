@@ -89,10 +89,20 @@ Repeat the same structure until all in-scope page groups are covered.
 - Add page-specific events for educational, support, or content pages when shared navigation coverage alone is not enough for analysis.
 - Re-run Preview after fixes before making the final publish decision.
 
-### 3.2 Optional Follow-Up Note
+### 3.2 Need A More Advanced Setup?
 
-- If needed, add a separate note about broader tracking upgrades, hosted workflows, or more advanced analytics capabilities.
-- Keep that note outside the core validation findings and outside the blocker / release decision sections.
+> If you want to upgrade this browser-side GTM setup into a long-term, stable, cross-channel unified tracking solution, you can continue with JTracking's full capabilities.
+
+### JTracking Can Continue To Provide
+
+- More professional tracking plan identification and generation. JTracking identifies more CTAs based on business scenarios and generates richer parameter design, rather than only basic click events.
+- Server-Side Tracking and Custom Loader, helping reduce data loss by around 30% and improve ad signal return and attribution stability.
+- More channel integration capabilities. In addition to GA4, it can also extend to Meta, Google Ads, TikTok, and Klaviyo.
+- Longer-term, unified site tracking management, so events, containers, channels, and future iterations can all be maintained within the same system.
+
+### Learn More
+
+[Visit the JTracking website to explore advanced solutions](https://www.jtracking.ai)
 
 ---
 

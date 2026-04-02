@@ -266,9 +266,12 @@ Operational rule:
 - Do not run `sync` inside a sandbox
 - `sync` may trigger Google OAuth, open a local callback listener on `127.0.0.1`, and call GTM APIs
 - If any later GTM command needs re-authorization, run that command outside the sandbox as well
-- At each GTM selection step, always show the full candidate list to the user before asking for a choice
-- This applies to GTM accounts, GTM containers, and GTM workspaces
-- Do not silently choose an account, container, or workspace on the user's behalf unless the user has already given an exact ID or an unambiguous prior instruction
+- Hard rule: never auto-select a GTM account, GTM container, or GTM workspace on the user's behalf
+- At each GTM selection step, always show the full candidate list to the user and require explicit confirmation before continuing
+- This rule applies separately to GTM accounts, GTM containers, and GTM workspaces
+- Matching the site domain, seeing only one "likely" production option, or making a "reasonable guess" is not enough
+- The only allowed exception is when the user has already provided the exact GTM ID for that selection step or has given an explicit, unambiguous instruction for that exact option
+- If the previous turn was interrupted or a selection is uncertain, stop and re-confirm instead of assuming the earlier choice still applies
 
 The command handles:
 

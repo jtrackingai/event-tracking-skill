@@ -94,6 +94,15 @@ Before running the full workflow, prepare:
 
 The artifact directory is required for every run.
 
+## GTM Selection Rule
+
+During `sync`, GTM target selection is a required user-confirmation step.
+
+- Never auto-select the GTM account, container, or workspace for the user
+- Always show the candidate list and require explicit user confirmation at each of the three selection steps
+- A matching domain name or a likely production-looking option is not enough to justify auto-selection
+- Only skip a selection step when the user has already provided the exact GTM ID for that step
+
 ## Workflow
 
 The workflow is designed to stay reviewable from start to finish.
@@ -104,7 +113,7 @@ The workflow is designed to stay reviewable from start to finish.
 | Page Grouping                | Organizes pages into business-purpose groups and prepares schema context for event generation | `./dist/cli.js prepare-schema <artifact-dir>/site-analysis.json` | updated `site-analysis.json`, `schema-context.json` |
 | Schema Generation And Review | Builds a GA4 event schema, checks selectors, and generates a reviewable event spec | `./dist/cli.js validate-schema <artifact-dir>/event-schema.json --check-selectors` and `./dist/cli.js generate-spec <artifact-dir>/event-schema.json` | `event-schema.json`, `event-spec.md`                |
 | GTM Generation               | Converts the approved schema into GTM-ready tags, triggers, and variables | `./dist/cli.js generate-gtm <artifact-dir>/event-schema.json --measurement-id <G-XXXXXXXXXX>` | `gtm-config.json`                                   |
-| GTM Sync                     | Authenticates with Google, lets you choose the target GTM workspace, and syncs the generated configuration | `./dist/cli.js sync <artifact-dir>/gtm-config.json`          | `gtm-context.json`                                  |
+| GTM Sync                     | Authenticates with Google, requires user confirmation for GTM account, container, and workspace selection, and syncs the generated configuration | `./dist/cli.js sync <artifact-dir>/gtm-config.json`          | `gtm-context.json`                                  |
 | Preview Verification         | Runs GTM Preview-based verification and reports which events fired, failed, or need review | `./dist/cli.js preview <artifact-dir>/event-schema.json --context-file <artifact-dir>/gtm-context.json` | `preview-report.md`, `preview-result.json`          |
 | Publish                      | Publishes the validated GTM workspace as a new container version | `./dist/cli.js publish --context-file <artifact-dir>/gtm-context.json --version-name "GA4 Events v1"` | published GTM version                               |
 

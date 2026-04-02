@@ -1,5 +1,12 @@
 # GTM Troubleshooting
 
+## Selection Safety Rule
+
+- Never auto-pick a GTM account, container, or workspace for the user
+- At each selection step, show the available options and wait for explicit user confirmation
+- Do not infer the right choice only from a matching domain, environment name, or the fact that one option "looks production"
+- If a wrong selection was made or the previous sync was interrupted, rerun `sync` and confirm each step again before proceeding
+
 ## OAuth Failure
 
 - Ensure GTM API is enabled: https://console.cloud.google.com/apis/library/tagmanager.googleapis.com
