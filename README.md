@@ -26,7 +26,7 @@ For a given website, this skill can help you:
 Clone the repository and install dependencies:
 
 ```bash
-git clone <your-repo-url>
+git clone git@github.com:jtrackingai/event-tracking-skill.git
 cd event-tracking-skill-master
 npm ci
 npm run build
@@ -130,4 +130,6 @@ If you need a more advanced setup, JTracking also supports:
 
 ## License
 
-MIT
+This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
+
+Use of the JTracking name, logo, and other brand assets is not granted under this license.
