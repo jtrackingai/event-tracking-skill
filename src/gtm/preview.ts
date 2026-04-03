@@ -170,11 +170,11 @@ async function restoreOriginalPage(
 ): Promise<void> {
   if (page.isClosed()) return;
 
-  if (page.url() !== originalPageUrl) {
-    await page.goto(originalPageUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
-    await injectPreviewContainer(page, gtmScriptUrl, gtmPublicId);
-    return;
-  }
+  // Always reload before the next synthetic interaction. URL-only checks miss
+  // same-page state changes such as open dialogs, scroll position, or partially
+  // completed form state left behind by previous clicks.
+  await page.goto(originalPageUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+  await injectPreviewContainer(page, gtmScriptUrl, gtmPublicId);
 
   if (!gtmScriptUrl) {
     await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
