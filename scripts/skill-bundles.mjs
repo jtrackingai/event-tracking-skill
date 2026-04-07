@@ -82,6 +82,8 @@ export function listExpectedExportedFiles(repoRoot, manifest) {
   getSkillBundles(manifest).forEach(bundle => {
     const bundleRoot = getBundleOutputPath(bundle);
     expected.add(path.join(bundleRoot, 'SKILL.md'));
+    expected.add(path.join(bundleRoot, 'VERSION'));
+    expected.add(path.join(bundleRoot, 'bundle.json'));
     expected.add(path.join(bundleRoot, 'agents', 'openai.yaml'));
 
     (bundle.copiedDirectories || []).forEach(copyEntry => {

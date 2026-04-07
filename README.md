@@ -26,7 +26,55 @@ For a given website, this skill can help you:
 
 ## Installation
 
-Recommended repo-local setup:
+### Install Into A Local Agent Skills Directory (Recommended)
+
+Use the built-in installer if you want:
+
+- installer-managed auto-update checks
+- a stable exported bundle layout
+- a custom target directory for whatever agent runtime you use
+
+Fast path:
+
+```bash
+./setup --install-skills
+```
+
+Direct installer path:
+
+```bash
+npm run install:skills
+```
+
+This is the recommended install path for Codex and also the most portable path for other agent environments that can load skills from a local directory.
+
+Codex defaults:
+
+- `$CODEX_HOME/skills` when `CODEX_HOME` is set
+- otherwise `~/.codex/skills`
+
+For other agent runtimes, point the installer at that runtime's skills directory:
+
+```bash
+npm run install:skills -- --target-dir /path/to/agent/skills
+```
+
+For a development-friendly install that stays pointed at local exported bundles:
+
+```bash
+npm run install:skills -- --mode link
+```
+
+Auto-update behavior:
+
+- `copy` installs are the recommended user path and can self-check for newer GitHub versions
+- `link` installs are for local development and intentionally do not auto-update from GitHub
+- older installed copies need one reinstall through `npm run install:skills` or `./setup --install-skills` before they gain the new auto-update bootstrap
+
+Use [docs/README.codex.md](docs/README.codex.md) for Codex-specific defaults, update notes, and troubleshooting.
+Use [docs/README.install.md](docs/README.install.md) for the full shared agent-install guide.
+
+### Repo-Local CLI Setup
 
 ```bash
 ./setup
@@ -34,13 +82,15 @@ Recommended repo-local setup:
 
 That installs dependencies, builds the CLI, and runs a basic environment check.
 
-### Install with skills.sh (Recommended)
+### Install with skills.sh (Alternative)
 
 Use this if you want to install the skill into your local agent skills directory and start using it right away.
 
 ```bash
 npx skills add jtrackingai/event-tracking-skill
 ```
+
+If you specifically want the built-in installer-managed auto-update bootstrap, use the built-in installer flow above instead.
 
 ### Manual Installation / Local Development
 
@@ -68,9 +118,10 @@ If the package is installed or linked as a binary, the public command name is `e
 ## Documentation Map
 
 - [README.md](README.md) for installation, quick start, and the public command surface
+- [docs/README.install.md](docs/README.install.md) for the shared agent-install flow, copy vs link behavior, and auto-update notes
 - [ARCHITECTURE.md](ARCHITECTURE.md) for artifact lifecycle, branch behavior, and system boundaries
 - [DEVELOPING.md](DEVELOPING.md) for maintainer commands, edit rules, and release checks
-- [docs/README.codex.md](docs/README.codex.md) for Codex-oriented install, update, and troubleshooting notes
+- [docs/README.codex.md](docs/README.codex.md) for Codex-specific defaults and troubleshooting on top of the generic installer flow
 - [docs/skills.md](docs/skills.md) for the umbrella skill and phase-skill map
 - [SKILL.md](SKILL.md) for the agent-facing workflow contract
 
@@ -104,39 +155,6 @@ Each exported bundle includes:
 - the `references/` files that the skill may need, including exported `architecture.md` and `skill-map.md` where relevant
 
 The exported bundles rewrite command examples to the public `event-tracking` command name. Inside this repository, keep using `./event-tracking`.
-
-## Install Into Codex
-
-To install the exported bundles into the default Codex skills directory, run:
-
-```bash
-npm run install:skills
-```
-
-For a development-friendly install that updates in place as `dist/skill-bundles/` changes, use link mode:
-
-```bash
-npm run install:skills -- --mode link
-```
-
-Default target resolution:
-
-- `$CODEX_HOME/skills` when `CODEX_HOME` is set
-- otherwise `~/.codex/skills`
-
-Useful variants:
-
-```bash
-npm run install:skills -- --target-dir /tmp/codex-skills
-npm run install:skills -- --mode link --target-dir ~/.codex/skills
-npm run install:skills -- --skill event-tracking-skill --skill tracking-schema
-./setup --install-skills
-./setup --install-skills --mode link
-```
-
-The installer can either copy or link the exported bundles into the target directory, so rerun the export or install step after skill text or metadata changes.
-
-Use [docs/README.codex.md](docs/README.codex.md) for a Codex-specific install/update workflow, including the new link mode and optional `.codex/INSTALL.md` bootstrap path.
 
 ## Quick Start
 
@@ -302,6 +320,7 @@ During `sync`, GTM target selection is a required user-confirmation step.
 - `npm run doctor` checks Node, the built CLI artifact, the repo-local wrapper, and the Playwright Chromium install.
 - `npm run export:skills` writes self-contained skill bundles to `dist/skill-bundles/` for packaging outside the repo.
 - `npm run install:skills` installs the exported bundles into `$CODEX_HOME/skills` or `~/.codex/skills`, with optional `--target-dir` and `--skill` filters.
+- copy-mode installed bundles can now check GitHub for a newer `VERSION` and self-update the selected installed bundle set.
 - `npm run install:skills -- --mode link` links the exported bundles into the skills directory instead of copying them, which is useful during local iteration.
 - `npm run check` rebuilds the CLI, runs automated tests, smoke-tests `./event-tracking --help`, exports and installs skill bundles into a temp directory, and enforces the public command surface in docs.
 

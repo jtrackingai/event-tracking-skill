@@ -28,13 +28,13 @@ npm run doctor
 | Command | Use |
 | --- | --- |
 | `./setup` | install dependencies, build, and run environment checks |
-| `./setup --install-skills` | install dependencies, build, run environment checks, then install skill bundles into the default Codex skills directory |
+| `./setup --install-skills` | install dependencies, build, run environment checks, then install skill bundles into the default agent skills target |
 | `./setup --install-skills --mode link` | same as above, but link exported skill bundles into the skills directory for local iteration |
 | `npm run build` | compile TypeScript into `dist/` |
 | `npm test` | rebuild, then run the standalone automated workflow-state and gate tests |
 | `npm run doctor` | verify Node, built CLI, repo-local wrapper, and Playwright Chromium |
 | `npm run export:skills` | generate self-contained skill bundles under `dist/skill-bundles/` |
-| `npm run install:skills -- [--target-dir <dir>] [--skill <name>] [--mode <copy|link>]` | copy or link exported bundles into a Codex skills directory |
+| `npm run install:skills -- [--target-dir <dir>] [--skill <name>] [--mode <copy|link>]` | copy or link exported bundles into an agent skills directory |
 | `npm run check` | rebuild, run automated tests and doctor, smoke-test `./event-tracking --help`, export skill bundles, and validate documented command surface |
 | `npm run dev` | run the CLI through `ts-node` while iterating locally |
 
@@ -50,12 +50,14 @@ Keep these rules stable unless you intentionally want to change the public surfa
 - `skills/manifest.json` is the source of truth for the exported / installable skill family; update it when adding, renaming, or removing shipped skills
 - `agents/openai.yaml` and `skills/*/agents/openai.yaml` should stay minimal and UI-focused
 - `dist/skill-bundles/` is generated output; change source docs first, then regenerate with `npm run export:skills`
-- installed copies under `$CODEX_HOME/skills` or `~/.codex/skills` are deployment output; regenerate and reinstall instead of editing them in place
-- linked installs under `$CODEX_HOME/skills` or `~/.codex/skills` point back to `dist/skill-bundles/`; regenerate exports after changing skill text or metadata
+- installed copies under the default agent skills target are deployment output; regenerate and reinstall instead of editing them in place
+- linked installs under the default agent skills target point back to `dist/skill-bundles/`; regenerate exports after changing skill text or metadata
 - `references/architecture.md` and `references/skill-map.md` are the install-facing runtime references that should ship unchanged into exported bundles
 - `README.md`, `ARCHITECTURE.md`, `references/architecture.md`, `SKILL.md`, and `references/output-contract.md` should agree on workflow checkpoints, prerequisite artifacts, produced artifacts, and resume semantics
 - conditional gates such as `analyze-live-gtm` before `prepare-schema` must be documented in workflow tables and quick-start snippets, not only in phase skills
 - Playwright-backed commands such as `analyze` and `preview` should be treated as direct non-sandbox execution paths; do not rely on a failed sandbox attempt before rerunning outside it
+- `VERSION` is the shipped skill-family version for installed bundle update checks and should stay aligned with `package.json`
+- copy installs are the supported auto-update path; link installs are intentionally non-updating
 - skill counts and phase names in docs should stay aligned with `skills/manifest.json`
 - artifact filenames in [references/output-contract.md](references/output-contract.md) are part of the public workflow contract
 - `workflow-state.json` is part of the public workflow contract once generated
@@ -84,10 +86,10 @@ npm run export:skills
 Run this when you want to verify the installed shape in a real skills directory:
 
 ```bash
-npm run install:skills -- --target-dir /tmp/codex-skills
+npm run install:skills -- --target-dir /tmp/agent-skills
 ```
 
-Run this when you want an in-place Codex install that follows regenerated bundles without another copy step:
+Run this when you want a link-mode install that follows regenerated bundles without another copy step:
 
 ```bash
 npm run install:skills -- --mode link
@@ -117,7 +119,8 @@ If you change CLI behavior:
 - update [ARCHITECTURE.md](ARCHITECTURE.md) when the artifact lifecycle or branch behavior changes
 - update [references/architecture.md](references/architecture.md) when install-facing artifact lifecycle or resume semantics change
 - update [docs/skills.md](docs/skills.md) and [references/skill-map.md](references/skill-map.md) when skill boundaries or phase inventory change
-- keep sandbox-execution expectations aligned in [SKILL.md](SKILL.md), affected `skills/*/SKILL.md`, and Codex-facing docs when command execution policy changes
+- keep sandbox-execution expectations aligned in [SKILL.md](SKILL.md), affected `skills/*/SKILL.md`, and platform-specific install docs when command execution policy changes
+- update install-time bootstrap or updater docs when changing `scripts/install-skills.mjs`, `runtime/skill-runtime/`, or `VERSION`
 - keep command examples and next-step prompts aligned with the public interface
 - keep the root `SKILL.md` at umbrella-skill scope; push detailed instructions down into phase skills or references when it starts growing again
 
@@ -136,6 +139,8 @@ If you change artifact files:
 - confirm `README.md`, `ARCHITECTURE.md`, `references/architecture.md`, `SKILL.md`, and `references/output-contract.md` agree on checkpoints, gates, and artifact names
 - confirm `docs/skills.md`, `references/skill-map.md`, and `skills/*/SKILL.md` still match the current phase boundaries and phase inventory
 - confirm Playwright-backed commands are documented as direct non-sandbox execution where relevant
+- confirm `VERSION` matches `package.json`
+- confirm copy installs still inject updater metadata and link installs still skip auto-update behavior
 - confirm `skills/manifest.json` still matches the actual shipped skill family
 - confirm `agents/openai.yaml` files still match skill names and intended invocation mode
 - confirm exported bundles under `dist/skill-bundles/` use `event-tracking` rather than `./event-tracking`

@@ -87,12 +87,12 @@ To export self-contained bundles for installation or distribution outside this r
 npm run export:skills
 ```
 
-That generates `dist/skill-bundles/<skill-name>/`, where each bundle carries its own `SKILL.md`, `agents/openai.yaml`, and copied `references/` tree. Exported architecture and skill-map material is written into `references/` so the installed bundle stays closer to the native Codex skill shape.
+That generates `dist/skill-bundles/<skill-name>/`, where each bundle carries its own `SKILL.md`, `agents/openai.yaml`, and copied `references/` tree. Exported architecture and skill-map material is written into `references/` so the installed bundle stays close to the native skill shape used by agent runtimes.
 
-To install those bundles into a real Codex skills directory, run:
+To install those bundles into a real agent skills directory, run:
 
 ```bash
 npm run install:skills
 ```
 
-That copies the generated bundles into `$CODEX_HOME/skills` or `~/.codex/skills`, unless `--target-dir` is provided.
+That copies the generated bundles into the installer's default target, unless `--target-dir` is provided. See [README.install.md](README.install.md) for the shared install flow and [README.codex.md](README.codex.md) for Codex-specific defaults.

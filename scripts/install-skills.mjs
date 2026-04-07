@@ -8,16 +8,22 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DEFAULT_UPDATE_SOURCE = {
+  provider: 'github-tarball',
+  versionUrl: process.env.EVENT_TRACKING_UPDATE_VERSION_URL || 'https://raw.githubusercontent.com/jtrackingai/event-tracking-skill/main/VERSION',
+  tarballUrl: process.env.EVENT_TRACKING_UPDATE_TARBALL_URL || 'https://codeload.github.com/jtrackingai/event-tracking-skill/tar.gz/refs/heads/main',
+};
 
 function printHelp() {
   console.log(`Usage: node scripts/install-skills.mjs [options]
 
-Install exported event-tracking skill bundles into a Codex skills directory.
+Install exported event-tracking skill bundles into an agent skills directory.
 
 Options:
   --target-dir <path>   Install into this directory instead of \$CODEX_HOME/skills or ~/.codex/skills
   --skill <name>        Install only the named skill bundle (repeatable)
   --mode <copy|link>    Copy bundles into the target directory or link them in place
+                        copy installs get installed auto-update metadata; link installs stay local-only
   --skip-export         Reuse the current dist/skill-bundles output instead of regenerating it first
   --dry-run             Print the installation plan without copying files
   -h, --help            Show this help message
@@ -155,7 +161,75 @@ function createDirectoryLink(sourcePath, targetPath) {
   fs.symlinkSync(sourcePath, targetPath, linkType);
 }
 
-function installBundle(targetRoot, bundle, mode, dryRun) {
+function quoteMarkdownPath(targetPath) {
+  return targetPath.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+}
+
+function prependAutoUpdateBootstrap(skillFile, scriptDir, selectedBundles) {
+  const checkScript = path.join(scriptDir, 'update-check.mjs');
+  const updateScript = path.join(scriptDir, 'self-update.mjs');
+  const refreshedSkill = skillFile;
+  const selectedLabel = selectedBundles.join(', ');
+  const originalContent = fs.readFileSync(skillFile, 'utf8');
+  const bootstrap = [
+    '<!-- event-tracking auto-update bootstrap:start -->',
+    '## Installed Auto-Update',
+    '',
+    'This installed skill copy can update itself from GitHub before you continue with the workflow.',
+    '',
+    'Before doing any task in this installed bundle:',
+    '',
+    `1. Run \`node "${quoteMarkdownPath(checkScript)}" --json\`.`,
+    '2. If the result status is `update_available`, immediately run the update command returned by that check or:',
+    `   \`node "${quoteMarkdownPath(updateScript)}" --apply\``,
+    `3. If the update succeeds, read [SKILL.md](${refreshedSkill}) again before continuing so you are following the refreshed instructions.`,
+    `4. This installed copy updates the same bundle set that was installed together: \`${selectedLabel}\`.`,
+    '',
+    'If the status is `up_to_date` or `disabled`, continue with the current installed version.',
+    '<!-- event-tracking auto-update bootstrap:end -->',
+    '',
+  ].join('\n');
+
+  fs.writeFileSync(skillFile, `${bootstrap}${originalContent}`);
+}
+
+function writeInstallMetadata(targetRoot, bundle, selectedBundles, autoUpdateEnabled) {
+  const targetPath = path.join(targetRoot, bundle.name);
+  const bundleMetadataPath = path.join(targetPath, 'bundle.json');
+  const bundleMetadata = JSON.parse(fs.readFileSync(bundleMetadataPath, 'utf8'));
+  const installMetadata = {
+    schemaVersion: 1,
+    bundleName: bundle.name,
+    installedAt: new Date().toISOString(),
+    installedVersion: bundleMetadata.familyVersion,
+    installMode: autoUpdateEnabled ? 'copy' : 'link',
+    autoUpdateEnabled,
+    targetDir: targetRoot,
+    bundleDir: targetPath,
+    selectedBundles,
+    updateSource: {
+      ...DEFAULT_UPDATE_SOURCE,
+      ...(bundleMetadata.updateSource || {}),
+    },
+  };
+
+  fs.writeFileSync(
+    path.join(targetPath, '.event-tracking-install.json'),
+    `${JSON.stringify(installMetadata, null, 2)}\n`,
+  );
+
+  if (!autoUpdateEnabled) {
+    return;
+  }
+
+  prependAutoUpdateBootstrap(
+    path.join(targetPath, 'SKILL.md'),
+    path.join(targetPath, 'runtime', 'skill-runtime'),
+    selectedBundles,
+  );
+}
+
+function installBundle(targetRoot, bundle, mode, dryRun, selectedBundles) {
   const sourcePath = path.join(repoRoot, bundle.outputPath);
   const targetPath = path.join(targetRoot, bundle.name);
 
@@ -180,6 +254,7 @@ function installBundle(targetRoot, bundle, mode, dryRun) {
   }
 
   fs.cpSync(sourcePath, targetPath, { recursive: true });
+  writeInstallMetadata(targetRoot, bundle, selectedBundles, true);
 }
 
 const options = parseArgs(process.argv.slice(2));
@@ -192,7 +267,13 @@ const targetDir = resolveTargetDir(options.targetDir);
 console.log(`Target skills directory: ${targetDir}`);
 console.log(`Install mode: ${options.mode}`);
 
-bundles.forEach(bundle => installBundle(targetDir, bundle, options.mode, options.dryRun));
+bundles.forEach(bundle => installBundle(
+  targetDir,
+  bundle,
+  options.mode,
+  options.dryRun,
+  bundles.map(item => item.name),
+));
 
 if (options.dryRun) {
   console.log(`Planned ${bundles.length} skill installation(s).`);

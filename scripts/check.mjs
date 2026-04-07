@@ -69,6 +69,22 @@ function assertResolvesTo(relativePath, expectedTargetPath, message) {
   }
 }
 
+function readText(relativePath) {
+  return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
+}
+
+function readJson(relativePath) {
+  return JSON.parse(readText(relativePath));
+}
+
+function assertJsonField(relativePath, key, predicate, message) {
+  const value = readJson(relativePath);
+  if (!predicate(value[key], value)) {
+    console.error(`Check failed: ${relativePath} has unexpected ${key}. ${message}`);
+    process.exit(1);
+  }
+}
+
 const sourceManifest = loadSourceSkillManifest(repoRoot);
 const allBundles = getSkillBundles(sourceManifest);
 const phaseSkillFiles = getPhaseSkillBundles(sourceManifest).map(bundle => bundle.skillFile);
@@ -89,8 +105,10 @@ runStep('Install exported skill bundles into a temp skills directory', 'node', [
 runStep('Link exported skill bundles into a temp skills directory', 'node', ['scripts/install-skills.mjs', '--skip-export', '--target-dir', tempLinkInstallDir, '--mode', 'link']);
 
 assertFileExists(SOURCE_SKILL_MANIFEST, 'Keep a canonical source manifest for the shipped skill family.');
+assertFileExists('VERSION', 'Keep a canonical skill-family version file for installed bundle update checks.');
 assertFileExists('ARCHITECTURE.md', 'Keep a dedicated system-design document in the repo root.');
 assertFileExists('DEVELOPING.md', 'Keep a dedicated maintainer guide in the repo root.');
+assertFileExists('docs/README.install.md', 'Keep a shared agent-install guide for portable skill installation.');
 assertFileExists('docs/README.codex.md', 'Keep a Codex-specific install and update guide for the exported skill family.');
 assertFileExists('.codex/INSTALL.md', 'Keep a bootstrap install note for Codex users who fetch this repository into a skill environment.');
 assertFileExists('docs/skills.md', 'Keep a dedicated skill map when the repo exposes a skill family.');
@@ -107,6 +125,10 @@ agentMetadataFiles.forEach(relativePath => {
 exportedBundleFiles.forEach(relativePath => {
   assertFileExists(relativePath, 'Self-contained skill bundles should export the installable skill surface.');
 });
+if (readText('VERSION').trim() !== readJson('package.json').version) {
+  console.error('Check failed: VERSION must match package.json version.');
+  process.exit(1);
+}
 assertFileDoesNotContain('README.md', 'node dist/cli.js', 'Use the public wrapper or installed command name instead.');
 assertFileDoesNotContain('SKILL.md', 'node dist/cli.js', 'Use the public wrapper or installed command name instead.');
 assertFileDoesNotContain('references/output-contract.md', 'node dist/cli.js', 'Use the public wrapper or installed command name instead.');
@@ -142,11 +164,41 @@ allBundles.forEach(bundle => {
   const relativePath = path.join(bundle.name, 'SKILL.md');
   assertFileExists(path.join(path.relative(repoRoot, tempInstallDir), relativePath), 'Installed skills should land in the requested target directory.');
 });
+assertFileExists(
+  path.join(path.relative(repoRoot, tempInstallDir), 'tracking-schema', '.event-tracking-install.json'),
+  'Copy installs should inject per-bundle auto-update metadata.',
+);
+assertJsonField(
+  path.join(path.relative(repoRoot, tempInstallDir), 'tracking-schema', '.event-tracking-install.json'),
+  'autoUpdateEnabled',
+  value => value === true,
+  'Copy installs should enable installed auto-update metadata.',
+);
+assertFileExists(
+  path.join(path.relative(repoRoot, tempInstallDir), 'tracking-schema', 'runtime', 'skill-runtime', 'update-check.mjs'),
+  'Installed bundles should ship the runtime update-check script.',
+);
+const installedSkillContent = fs.readFileSync(
+  path.join(tempInstallDir, 'tracking-schema', 'SKILL.md'),
+  'utf8',
+);
+if (!installedSkillContent.includes('## Installed Auto-Update')) {
+  console.error('Check failed: copy-mode installed bundles should inject the Installed Auto-Update bootstrap.');
+  process.exit(1);
+}
 assertResolvesTo(
   path.join(path.relative(repoRoot, tempLinkInstallDir), 'event-tracking-skill'),
   path.join(repoRoot, 'dist', 'skill-bundles', 'event-tracking-skill'),
   'Link-mode installs should resolve back to the exported bundle path.',
 );
+const linkedSkillContent = fs.readFileSync(
+  path.join(tempLinkInstallDir, 'tracking-schema', 'SKILL.md'),
+  'utf8',
+);
+if (linkedSkillContent.includes('## Installed Auto-Update')) {
+  console.error('Check failed: link-mode installs should not inject the Installed Auto-Update bootstrap.');
+  process.exit(1);
+}
 [
   'event-tracking-skill/references/architecture.md',
   'event-tracking-skill/references/skill-map.md',
