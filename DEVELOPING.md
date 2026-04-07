@@ -55,6 +55,7 @@ Keep these rules stable unless you intentionally want to change the public surfa
 - `references/architecture.md` and `references/skill-map.md` are the install-facing runtime references that should ship unchanged into exported bundles
 - `README.md`, `ARCHITECTURE.md`, `references/architecture.md`, `SKILL.md`, and `references/output-contract.md` should agree on workflow checkpoints, prerequisite artifacts, produced artifacts, and resume semantics
 - conditional gates such as `analyze-live-gtm` before `prepare-schema` must be documented in workflow tables and quick-start snippets, not only in phase skills
+- Playwright-backed commands such as `analyze` and `preview` should be treated as direct non-sandbox execution paths; do not rely on a failed sandbox attempt before rerunning outside it
 - skill counts and phase names in docs should stay aligned with `skills/manifest.json`
 - artifact filenames in [references/output-contract.md](references/output-contract.md) are part of the public workflow contract
 - `workflow-state.json` is part of the public workflow contract once generated
@@ -116,6 +117,7 @@ If you change CLI behavior:
 - update [ARCHITECTURE.md](ARCHITECTURE.md) when the artifact lifecycle or branch behavior changes
 - update [references/architecture.md](references/architecture.md) when install-facing artifact lifecycle or resume semantics change
 - update [docs/skills.md](docs/skills.md) and [references/skill-map.md](references/skill-map.md) when skill boundaries or phase inventory change
+- keep sandbox-execution expectations aligned in [SKILL.md](SKILL.md), affected `skills/*/SKILL.md`, and Codex-facing docs when command execution policy changes
 - keep command examples and next-step prompts aligned with the public interface
 - keep the root `SKILL.md` at umbrella-skill scope; push detailed instructions down into phase skills or references when it starts growing again
 
@@ -133,6 +135,7 @@ If you change artifact files:
 - confirm new examples use `./event-tracking`
 - confirm `README.md`, `ARCHITECTURE.md`, `references/architecture.md`, `SKILL.md`, and `references/output-contract.md` agree on checkpoints, gates, and artifact names
 - confirm `docs/skills.md`, `references/skill-map.md`, and `skills/*/SKILL.md` still match the current phase boundaries and phase inventory
+- confirm Playwright-backed commands are documented as direct non-sandbox execution where relevant
 - confirm `skills/manifest.json` still matches the actual shipped skill family
 - confirm `agents/openai.yaml` files still match skill names and intended invocation mode
 - confirm exported bundles under `dist/skill-bundles/` use `event-tracking` rather than `./event-tracking`

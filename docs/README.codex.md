@@ -98,6 +98,8 @@ npm run install:skills -- --dry-run
 
 ## Troubleshooting
 
+- In Codex environments, run Playwright-backed commands such as `./event-tracking analyze ...` and `./event-tracking preview ...` outside the sandbox from the start. Do not burn a first sandbox attempt before rerunning outside it.
+- Treat `./event-tracking sync ...` the same way when OAuth may need a local callback on `127.0.0.1`.
 - If the skills are missing, run `npm run export:skills` and then reinstall.
 - If Codex does not pick up newly installed skills immediately, restart the Codex session after installation.
 - If linked installs appear stale, confirm that `dist/skill-bundles/` was regenerated after the last skill-text change.

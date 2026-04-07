@@ -21,6 +21,8 @@ In this repository, use the repo-root wrapper:
 ./event-tracking analyze <url> --output-root <output-root>
 ```
 
+Run `analyze` outside sandboxed environments by default. Do not first attempt the Playwright crawl inside the sandbox and then retry after it is intercepted.
+
 Partial mode:
 
 ```bash

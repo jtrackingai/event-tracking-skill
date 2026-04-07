@@ -38,7 +38,7 @@ Once `site-analysis.json` indicates Shopify, keep discovery and grouping shared,
 3. If the user already provides an artifact directory or one of its files, resume from the earliest unmet prerequisite instead of restarting from `analyze`.
 4. Use `./event-tracking status <artifact-dir-or-file>` whenever the current checkpoint or next step is unclear.
 5. Google OAuth client metadata is embedded in the CLI and may be overridden with `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
-6. Any step that may trigger Google OAuth must run outside a sandboxed environment. In practice, treat `sync` as a non-sandbox command by default because the OAuth flow may need to bind a local callback on `127.0.0.1` and reach GTM APIs directly.
+6. Any Playwright-backed or OAuth-triggering step must run outside a sandboxed environment by default. In practice, treat `analyze`, `preview`, and `sync` as non-sandbox commands, and do not first attempt them in the sandbox before retrying after interception.
 7. Never auto-select a GTM account, GTM container, or GTM workspace on the user's behalf. Always show candidates and require explicit confirmation unless the user already provided the exact ID for that step.
 8. Do not continue past the phase boundary the user asked for. Stop after the requested phase unless the user explicitly asks to continue.
 

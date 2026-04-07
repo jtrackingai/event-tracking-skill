@@ -20,6 +20,8 @@ Run preview:
 ./event-tracking preview <artifact-dir>/event-schema.json --context-file <artifact-dir>/gtm-context.json
 ```
 
+Run `preview` outside sandboxed environments by default. Do not first attempt the Playwright browser step inside the sandbox and then retry after it is intercepted.
+
 Then interpret:
 
 - blockers
