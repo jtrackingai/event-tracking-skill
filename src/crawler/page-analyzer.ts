@@ -83,6 +83,7 @@ export interface SiteAnalysis {
   pages: PageAnalysis[];
   pageGroups: PageGroup[];
   pageGroupsReview?: PageGroupsReview;
+  gtmPublicIds?: string[];
   discoveredUrls: string[];
   skippedUrls: string[];
   crawlWarnings: string[];
@@ -485,6 +486,7 @@ export async function analyzeSite(
   const skippedUrls: string[] = [];
   const visitedUrls = new Set<string>();
   const collectedDLEvents: DataLayerEvent[] = [];
+  const detectedGtmPublicIds = new Set<string>();
   const detectedPlatforms: SitePlatform[] = [];
   let wafBlockedCount = 0;
 
@@ -627,6 +629,20 @@ export async function analyzeSite(
   try {
     const context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (compatible; EventTrackingSkill/1.0)',
+    });
+    context.on('request', request => {
+      try {
+        const requestUrl = new URL(request.url());
+        const isGtmRuntime = requestUrl.hostname.endsWith('googletagmanager.com') && requestUrl.pathname.endsWith('/gtm.js');
+        if (!isGtmRuntime) return;
+
+        const id = requestUrl.searchParams.get('id');
+        if (id && /^GTM-/i.test(id)) {
+          detectedGtmPublicIds.add(id.toUpperCase());
+        }
+      } catch {
+        // Ignore non-URL or malformed requests while crawling.
+      }
     });
 
     if (options.mode === 'partial') {
@@ -783,6 +799,9 @@ export async function analyzeSite(
   if (uniqueDLEvents.length > 0) {
     console.log(`  Detected ${uniqueDLEvents.length} existing dataLayer event(s): ${uniqueDLEvents.map(e => e.event).join(', ')}`);
   }
+  if (detectedGtmPublicIds.size > 0) {
+    console.log(`  Detected ${detectedGtmPublicIds.size} live GTM container(s): ${Array.from(detectedGtmPublicIds).join(', ')}`);
+  }
 
   return {
     rootUrl,
@@ -791,6 +810,7 @@ export async function analyzeSite(
     pages,
     pageGroups: [],
     pageGroupsReview: { status: 'pending' },
+    gtmPublicIds: Array.from(detectedGtmPublicIds).sort(),
     discoveredUrls,
     skippedUrls,
     crawlWarnings,

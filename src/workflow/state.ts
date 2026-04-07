@@ -9,6 +9,7 @@ import {
   getPageGroupsReviewState,
   hasConfirmedPageGroups,
 } from '../crawler/page-analyzer';
+import { LiveGtmAnalysis } from '../gtm/live-parser';
 
 export const WORKFLOW_STATE_FILE = 'workflow-state.json';
 
@@ -18,6 +19,7 @@ export type WorkflowCheckpoint =
   | 'analyzed'
   | 'grouped'
   | 'group_approved'
+  | 'live_gtm_analyzed'
   | 'schema_prepared'
   | 'schema_present'
   | 'schema_approved'
@@ -51,6 +53,8 @@ export interface PublishState {
 
 export interface WorkflowArtifacts {
   siteAnalysis: boolean;
+  liveGtmAnalysis: boolean;
+  liveGtmReview: boolean;
   schemaContext: boolean;
   eventSchema: boolean;
   eventSpec: boolean;
@@ -91,6 +95,8 @@ export interface WorkflowStateUpdate {
 
 interface WorkflowFiles {
   siteAnalysis: string;
+  liveGtmAnalysis: string;
+  liveGtmReview: string;
   schemaContext: string;
   eventSchema: string;
   eventSpec: string;
@@ -110,6 +116,7 @@ const PRIMARY_CHECKPOINTS: WorkflowCheckpoint[] = [
   'analyzed',
   'grouped',
   'group_approved',
+  'live_gtm_analyzed',
   'schema_prepared',
   'schema_present',
   'schema_approved',
@@ -135,6 +142,8 @@ function formatPublicCommand(args: string[]): string {
 function getWorkflowFiles(artifactDir: string): WorkflowFiles {
   return {
     siteAnalysis: path.join(artifactDir, 'site-analysis.json'),
+    liveGtmAnalysis: path.join(artifactDir, 'live-gtm-analysis.json'),
+    liveGtmReview: path.join(artifactDir, 'live-gtm-review.md'),
     schemaContext: path.join(artifactDir, 'schema-context.json'),
     eventSchema: path.join(artifactDir, 'event-schema.json'),
     eventSpec: path.join(artifactDir, 'event-spec.md'),
@@ -178,6 +187,10 @@ function stableStringify(value: unknown): string {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`);
   return `{${entries.join(',')}}`;
+}
+
+function uniq(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 export function getSchemaHash(schema: unknown): string {
@@ -241,11 +254,26 @@ function getCurrentCheckpoint(completed: WorkflowCheckpoint[]): WorkflowCheckpoi
   return 'not_started';
 }
 
+function requiresLiveGtmAnalysis(analysis: SiteAnalysis | null): boolean {
+  return uniq(analysis?.gtmPublicIds ?? []).length > 0;
+}
+
+function hasCurrentLiveGtmAnalysis(analysis: SiteAnalysis | null, liveAnalysis: LiveGtmAnalysis | null): boolean {
+  if (!requiresLiveGtmAnalysis(analysis)) return true;
+  if (!liveAnalysis) return false;
+
+  const expectedIds = uniq(analysis?.gtmPublicIds ?? []);
+  const analyzedIds = uniq(liveAnalysis.detectedContainerIds ?? []);
+  return expectedIds.every(id => analyzedIds.includes(id));
+}
+
 function getNextAction(args: {
   files: WorkflowFiles;
   analysis: SiteAnalysis | null;
   hasGroupedPages: boolean;
   groupsConfirmed: boolean;
+  liveGtmRequired: boolean;
+  liveGtmReady: boolean;
   schemaExists: boolean;
   schemaConfirmed: boolean;
   eventSpecExists: boolean;
@@ -259,6 +287,8 @@ function getNextAction(args: {
     analysis,
     hasGroupedPages,
     groupsConfirmed,
+    liveGtmRequired,
+    liveGtmReady,
     schemaExists,
     schemaConfirmed,
     eventSpecExists,
@@ -334,6 +364,13 @@ function getNextAction(args: {
     };
   }
 
+  if (liveGtmRequired && !liveGtmReady) {
+    return {
+      nextAction: 'Analyze the live GTM container baseline before schema preparation.',
+      nextCommand: formatPublicCommand(['analyze-live-gtm', files.siteAnalysis]),
+    };
+  }
+
   if (!fileExists(files.schemaContext)) {
     return {
       nextAction: 'Prepare compressed schema context from the approved site analysis.',
@@ -359,12 +396,15 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
   const files = getWorkflowFiles(artifactDir);
 
   const analysis = tryReadJsonFile<SiteAnalysis>(files.siteAnalysis, warnings, 'site-analysis.json');
+  const liveAnalysis = tryReadJsonFile<LiveGtmAnalysis>(files.liveGtmAnalysis, warnings, 'live-gtm-analysis.json');
   const schema = tryReadJsonFile<unknown>(files.eventSchema, warnings, 'event-schema.json');
   const previewResult = tryReadJsonFile<Record<string, unknown>>(files.previewResult, warnings, 'preview-result.json');
 
   const pageGroupsReview = analysis ? getPageGroupsReviewState(analysis) : defaultPageGroupsReview();
   const hasGroupedPages = !!analysis && analysis.pageGroups.length > 0;
   const groupsConfirmed = !!analysis && hasConfirmedPageGroups(analysis);
+  const liveGtmRequired = requiresLiveGtmAnalysis(analysis);
+  const liveGtmReady = hasCurrentLiveGtmAnalysis(analysis, liveAnalysis);
 
   const previousSchemaReview = previousState?.schemaReview;
   const schemaHash = schema ? getSchemaHash(schema) : undefined;
@@ -406,6 +446,8 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
 
   const artifacts: WorkflowArtifacts = {
     siteAnalysis: fileExists(files.siteAnalysis),
+    liveGtmAnalysis: fileExists(files.liveGtmAnalysis),
+    liveGtmReview: fileExists(files.liveGtmReview),
     schemaContext: fileExists(files.schemaContext),
     eventSchema: fileExists(files.eventSchema),
     eventSpec: fileExists(files.eventSpec),
@@ -424,6 +466,7 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
   if (artifacts.siteAnalysis) completed.push('analyzed');
   if (hasGroupedPages) completed.push('grouped');
   if (groupsConfirmed) completed.push('group_approved');
+  if (artifacts.liveGtmAnalysis && liveGtmReady) completed.push('live_gtm_analyzed');
   if (artifacts.schemaContext) completed.push('schema_prepared');
   if (artifacts.eventSchema) completed.push('schema_present');
   if (artifacts.eventSchema && schemaReview.status === 'confirmed') completed.push('schema_approved');
@@ -440,6 +483,15 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
   if (artifacts.schemaContext && !completed.includes('group_approved')) {
     warnings.push('schema-context.json exists, but page groups are not currently approved. Re-confirm page groups and rerun prepare-schema.');
   }
+  if (liveGtmRequired && !artifacts.liveGtmAnalysis) {
+    warnings.push('The site-analysis file detected live GTM container IDs, but live-gtm-analysis.json is missing. Run analyze-live-gtm before preparing or trusting the current schema context.');
+  }
+  if (artifacts.liveGtmAnalysis && liveGtmRequired && !liveGtmReady) {
+    warnings.push('live-gtm-analysis.json does not cover all GTM containers currently detected in site-analysis.json. Re-run analyze-live-gtm before preparing schema or trusting downstream artifacts.');
+  }
+  if (artifacts.schemaContext && liveGtmRequired && !completed.includes('live_gtm_analyzed')) {
+    warnings.push('schema-context.json exists without a current live GTM baseline. Re-run analyze-live-gtm and prepare-schema before authoring or trusting the schema.');
+  }
   if (artifacts.gtmConfig && !completed.includes('schema_approved')) {
     warnings.push('gtm-config.json exists, but the current event schema is not confirmed. Treat downstream GTM artifacts as stale until the schema is re-confirmed and GTM config is regenerated.');
   }
@@ -452,6 +504,8 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
     analysis,
     hasGroupedPages,
     groupsConfirmed,
+    liveGtmRequired,
+    liveGtmReady,
     schemaExists: artifacts.eventSchema,
     schemaConfirmed: schemaReview.status === 'confirmed',
     eventSpecExists: artifacts.eventSpec,

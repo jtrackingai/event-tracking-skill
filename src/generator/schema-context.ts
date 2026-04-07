@@ -1,5 +1,7 @@
 import { SiteAnalysis, PageGroup, PageAnalysis, InteractiveElement, DataLayerEvent } from '../crawler/page-analyzer';
 import { SitePlatform } from '../crawler/platform-detector';
+import { LiveGtmAnalysis } from '../gtm/live-parser';
+import { ExistingTrackingBaseline, buildExistingTrackingBaseline } from './live-tracking-insights';
 
 /**
  * Compressed per-group summary for AI event schema generation.
@@ -43,6 +45,7 @@ export interface SchemaContext {
   totalPagesCrawled: number;
   crawlWarnings: string[];
   dataLayerEvents: DataLayerEvent[];
+  existingTrackingBaseline?: ExistingTrackingBaseline;
   groups: GroupSummary[];
 }
 
@@ -117,7 +120,7 @@ function summarizeGroup(group: PageGroup, pages: PageAnalysis[]): GroupSummary {
  * Compresses site-analysis.json into a smaller context file
  * optimized for AI event schema generation.
  */
-export function buildSchemaContext(analysis: SiteAnalysis): SchemaContext {
+export function buildSchemaContext(analysis: SiteAnalysis, liveAnalysis?: LiveGtmAnalysis | null): SchemaContext {
   return {
     rootUrl: analysis.rootUrl,
     rootDomain: analysis.rootDomain,
@@ -125,6 +128,7 @@ export function buildSchemaContext(analysis: SiteAnalysis): SchemaContext {
     totalPagesCrawled: analysis.pages.length,
     crawlWarnings: analysis.crawlWarnings,
     dataLayerEvents: analysis.dataLayerEvents || [],
+    existingTrackingBaseline: liveAnalysis ? buildExistingTrackingBaseline(liveAnalysis) : undefined,
     groups: analysis.pageGroups.map(g => summarizeGroup(g, analysis.pages)),
   };
 }

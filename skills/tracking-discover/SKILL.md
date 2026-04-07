@@ -40,6 +40,7 @@ Report:
 - skipped URLs
 - warnings
 - detected `dataLayer` events
+- detected live GTM container IDs
 - detected platform
 
 ## Stop Boundary

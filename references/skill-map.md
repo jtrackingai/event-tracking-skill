@@ -11,6 +11,7 @@ If you are working in the source repository, the repo-facing companion lives at 
 | `event-tracking-skill` | umbrella workflow router | the request is end-to-end, ambiguous, or spans multiple phases | whichever checkpoint matches the user intent |
 | `tracking-discover` | analysis bootstrap | the user wants crawl coverage, platform detection, dataLayer discovery, or a fresh artifact directory | `site-analysis.json` |
 | `tracking-group` | page grouping review | the user wants page-group authoring, grouping adjustments, or page-group approval only | confirmed `site-analysis.json` |
+| `tracking-live-gtm` | live GTM baseline audit | the user wants to inspect the real live GTM runtime before schema generation or compare multiple live GTM containers | `live-gtm-analysis.json` and `live-gtm-review.md` |
 | `tracking-schema` | schema authoring and approval | the user wants event design, selector validation, schema review, or spec generation | confirmed `event-schema.json` and optional `event-spec.md` |
 | `tracking-sync` | GTM config generation and sync | the user wants GTM-ready config, workspace sync, or container selection | `gtm-config.json` or `gtm-context.json` |
 | `tracking-verify` | preview QA and go-live handoff | the user wants preview verification, QA interpretation, or a publish-ready checkpoint | `preview-report.md` or publish outcome |
@@ -37,6 +38,12 @@ If you are working in the source repository, the repo-facing companion lives at 
 - editing `pageGroups`
 - page-group review
 - `confirm-page-groups`
+
+`tracking-live-gtm` owns:
+
+- `analyze-live-gtm`
+- public live GTM runtime comparison
+- primary comparison container selection
 
 `tracking-schema` owns:
 

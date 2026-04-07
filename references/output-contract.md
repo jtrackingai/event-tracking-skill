@@ -12,6 +12,8 @@ After the artifact directory is chosen, downstream commands should keep reading 
 | File | Description |
 |------|-------------|
 | `site-analysis.json` | Raw page structure from Playwright crawl — pages, interactive elements, page groups, and page-group confirmation metadata |
+| `live-gtm-analysis.json` | Parsed summary of the site's real public GTM runtime, including existing live events, parameters, trigger hints, and the primary comparison container |
+| `live-gtm-review.md` | Human-readable audit of the live GTM baseline and container comparison |
 | `schema-context.json` | Compressed crawl data for AI event generation (auto-generated, do not edit) |
 | `shopify-schema-template.json` | Shopify-only baseline event schema template generated during `prepare-schema`; use as the starting point for ecommerce custom events |
 | `shopify-bootstrap-review.md` | Shopify-only human-readable review of baseline and inferred bootstrap events, including why each one was included and whether it should be kept, reviewed manually, or removed |
@@ -36,6 +38,8 @@ After the schema is approved, run `./event-tracking confirm-schema <artifact-dir
 
 After the current grouping is approved, run `./event-tracking confirm-page-groups <artifact-dir>/site-analysis.json`. That command stores a hash of the approved `pageGroups` snapshot in `site-analysis.json`.
 
+If `site-analysis.json` detected real GTM public IDs, run `./event-tracking analyze-live-gtm <artifact-dir>/site-analysis.json` before `prepare-schema`. The schema context is expected to include this live baseline so the generated events can fix or extend the current live tracking instead of ignoring it.
+
 `prepare-schema` only continues when the stored confirmation hash still matches the current `pageGroups`. If the groups change later, the confirmation is treated as stale and must be recorded again.
 
 `generate-gtm` only continues when the stored schema confirmation hash in `workflow-state.json` still matches the current `event-schema.json`. If the schema changes later, the confirmation is treated as stale and must be recorded again.
@@ -55,6 +59,8 @@ Example:
 ```
 /tmp/output/example_com/
   site-analysis.json
+  live-gtm-analysis.json
+  live-gtm-review.md
   event-schema.json
   workflow-state.json
   gtm-config.json

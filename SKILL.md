@@ -17,10 +17,11 @@ Do not assume the user wants the full workflow.
 
 ## Skill Family
 
-The skill family is split into one umbrella skill plus six phase skills:
+The skill family is split into one umbrella skill plus seven phase skills:
 
 - `tracking-discover` for crawl coverage, platform detection, and fresh artifact bootstrap
 - `tracking-group` for page-group authoring and approval
+- `tracking-live-gtm` for auditing the real live GTM runtime before schema generation
 - `tracking-schema` for schema preparation, review, validation, and approval
 - `tracking-sync` for GTM config generation and sync
 - `tracking-verify` for preview QA and optional publish handoff
@@ -47,6 +48,7 @@ Route by user intent and current artifacts:
 
 - fresh URL, crawl request, or no artifacts yet: start with `tracking-discover`
 - `site-analysis.json` with missing or unconfirmed `pageGroups`: route to `tracking-group`
+- confirmed `site-analysis.json` with detected live GTM container IDs but no live baseline review yet: route to `tracking-live-gtm`
 - confirmed `site-analysis.json` or an in-progress `event-schema.json`: route to `tracking-schema`
 - `gtm-config.json`: route to `tracking-sync`
 - `gtm-context.json`: route to `tracking-verify`, with publish treated as a separate explicit action
@@ -57,6 +59,7 @@ If only the root skill is available, follow the same routing logic directly and 
 ## Stop Rules
 
 - Do not bypass page-group approval before `prepare-schema`.
+- When live GTM containers are detected on the site, do not bypass the live baseline review before schema generation.
 - Do not bypass schema approval before `generate-gtm` unless the user explicitly wants `--force`.
 - Treat preview QA and publish as separate decisions.
 - Treat Shopify manual verification as the expected path for Shopify runs, not as a fallback error case.

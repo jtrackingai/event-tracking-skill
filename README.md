@@ -34,14 +34,23 @@ Recommended repo-local setup:
 
 That installs dependencies, builds the CLI, and runs a basic environment check.
 
-Manual setup:
+### Install with skills.sh (Recommended)
+
+Use this if you want to install the skill into your local agent skills directory and start using it right away.
 
 ```bash
-git clone git@github.com:jtrackingai/event-tracking-skill.git
+npx skills add jtrackingai/event-tracking-skill
+```
+
+### Manual Installation / Local Development
+
+Use this if you want to inspect the source, run the CLI directly, or work on the skill locally.
+
+```bash
+git clone https://github.com/jtrackingai/event-tracking-skill.git
 cd event-tracking-skill
 npm ci
 npm run build
-npm run doctor
 ```
 
 `npm ci` also installs Playwright's Chromium browser, which is required by the crawl and preview steps.

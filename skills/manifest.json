@@ -37,6 +37,18 @@
       ]
     },
     {
+      "name": "tracking-live-gtm",
+      "kind": "phase",
+      "skillFile": "skills/tracking-live-gtm/SKILL.md",
+      "metadataFile": "skills/tracking-live-gtm/agents/openai.yaml",
+      "copiedDirectories": [
+        {
+          "source": "references",
+          "target": "references"
+        }
+      ]
+    },
+    {
       "name": "tracking-schema",
       "kind": "phase",
       "skillFile": "skills/tracking-schema/SKILL.md",

@@ -22,6 +22,8 @@ If schema context is not prepared yet:
 ./event-tracking prepare-schema <artifact-dir>/site-analysis.json
 ```
 
+If the site has a live GTM container installed, make sure `tracking-live-gtm` has already produced `<artifact-dir>/live-gtm-analysis.json` before running `prepare-schema`.
+
 Then:
 
 ```bash
@@ -32,6 +34,8 @@ Then:
 
 During review:
 
+- explain what live tracking problems the schema fixes when `live-gtm-analysis.json` is present
+- explain what benefits the new schema brings compared with the current live baseline
 - show the event list
 - show grouped parameter tables per event
 - stop for user approval before GTM generation

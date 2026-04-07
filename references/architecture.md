@@ -32,6 +32,7 @@ All workflow state lives inside one artifact directory for one site run.
 | `analyzed` | site URL | `site-analysis.json` | CLI-enforced |
 | `grouped` | `site-analysis.json` | updated `pageGroups` | human or agent workflow |
 | `group_approved` | grouped `site-analysis.json` | `pageGroupsReview.confirmedHash` in `site-analysis.json` | CLI-enforced |
+| `live_gtm_analyzed` | approved `site-analysis.json` when live GTM IDs are detected | `live-gtm-analysis.json`, `live-gtm-review.md` | CLI-enforced when live GTM is present |
 | `schema_prepared` | approved `site-analysis.json` | `schema-context.json`, Shopify bootstrap artifacts when applicable | CLI-enforced |
 | `schema_approved` | `event-schema.json` | approved schema hash in `workflow-state.json` and optional `event-spec.md` | CLI-enforced |
 | `gtm_generated` | approved `event-schema.json` | `gtm-config.json` | CLI-enforced |
@@ -42,6 +43,7 @@ All workflow state lives inside one artifact directory for one site run.
 Gate notes:
 
 - `prepare-schema` enforces `group_approved`
+- `prepare-schema` also enforces `live_gtm_analyzed` when `site-analysis.json` detected real GTM container IDs
 - `generate-gtm` enforces `schema_approved` unless the user explicitly forces it
 - `preview` and `publish` both write back into `workflow-state.json`
 
@@ -57,6 +59,7 @@ Shared early stages:
 - `analyze`
 - page grouping
 - page-group approval
+- live GTM baseline audit when applicable
 - schema preparation
 
 Shopify-only outputs:
@@ -87,6 +90,7 @@ Use `event-tracking status <artifact-dir-or-file>` when the next step is unclear
 - current checkpoint
 - completed checkpoints
 - page-group review state
+- live GTM baseline readiness
 - schema review state
 - verification status
 - publish status
@@ -99,7 +103,7 @@ Treat it as the machine-readable checkpoint layer on top of the artifact files t
 The skill family has:
 
 - one umbrella skill: `event-tracking-skill`
-- six phase skills: `tracking-discover`, `tracking-group`, `tracking-schema`, `tracking-sync`, `tracking-verify`, `tracking-shopify`
+- seven phase skills: `tracking-discover`, `tracking-group`, `tracking-live-gtm`, `tracking-schema`, `tracking-sync`, `tracking-verify`, `tracking-shopify`
 
 Shopify handoff rule:
 

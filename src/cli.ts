@@ -20,9 +20,11 @@ import { GTMClient, GTMAccount, GTMContainer, GTMWorkspace } from './gtm/client'
 import { syncConfigToWorkspace, dryRunSync } from './gtm/sync';
 import { validateEventSchema, getQuotaSummary } from './generator/schema-validator';
 import { buildSchemaContext } from './generator/schema-context';
+import { buildExistingTrackingBaseline, compareSchemaToLiveTracking } from './generator/live-tracking-insights';
 import { checkSelectors } from './generator/selector-check';
 import { runPreviewVerification, checkGTMOnPage } from './gtm/preview';
 import { generatePreviewReport } from './reporter/preview-report';
+import { analyzeLiveGtmContainers, generateLiveGtmReviewMarkdown, LiveGtmAnalysis } from './gtm/live-parser';
 import { isShopifyPlatform } from './crawler/platform-detector';
 import { generateShopifyPixelArtifacts } from './shopify/pixel';
 import { buildShopifyBootstrapArtifacts } from './shopify/schema-template';
@@ -151,6 +153,19 @@ function writeJsonFile(file: string, value: unknown): void {
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
 }
 
+function uniq(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function parseCommaSeparatedList(value?: string): string[] {
+  return uniq(
+    (value || '')
+      .split(',')
+      .map(entry => entry.trim())
+      .filter(Boolean),
+  );
+}
+
 function printPageGroupsSummary(pageGroups: SiteAnalysis['pageGroups']): void {
   console.log('\n📋 Current page groups:');
   pageGroups.forEach((group, idx) => {
@@ -252,6 +267,12 @@ async function selectFromList<T extends { name?: string; publicId?: string }>(
   return items[idx];
 }
 
+function getRequiredLiveGtmIds(analysis: SiteAnalysis, override?: string): string[] {
+  const fromOverride = parseCommaSeparatedList(override).map(id => id.toUpperCase());
+  if (fromOverride.length > 0) return fromOverride;
+  return uniq((analysis.gtmPublicIds || []).map(id => id.toUpperCase()));
+}
+
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 program
@@ -324,6 +345,9 @@ program
     if (siteAnalysis.platform.signals.length > 0) {
       console.log(`   Platform signals: ${siteAnalysis.platform.signals.join(', ')}`);
     }
+    if ((siteAnalysis.gtmPublicIds || []).length > 0) {
+      console.log(`   Live GTM containers: ${(siteAnalysis.gtmPublicIds || []).join(', ')}`);
+    }
 
     if (siteAnalysis.crawlWarnings.length > 0) {
       console.log(`\n⚠️  Warnings:`);
@@ -375,11 +399,78 @@ program
       confirmedHash: currentHash,
     };
     writeJsonFile(resolvedFile, analysis);
-    refreshWorkflowState(resolveArtifactDirFromFile(resolvedFile));
+    const workflowState = refreshWorkflowState(resolveArtifactDirFromFile(resolvedFile));
 
     console.log(`\n✅ Page groups confirmed.`);
     console.log(`   Confirmation recorded in: ${resolvedFile}`);
-    console.log(`   Next step: ${formatPublicCommand(['prepare-schema', resolvedFile])}`);
+    if (workflowState.nextCommand) {
+      console.log(`   Next step: ${workflowState.nextCommand}`);
+    }
+  });
+
+program
+  .command('analyze-live-gtm <site-analysis-file>')
+  .description('Fetch and analyze the public live GTM runtime before schema generation')
+  .option('--gtm-id <ids>', 'Comma-separated GTM public IDs to analyze instead of the IDs detected during crawl')
+  .option('--primary-container-id <id>', 'Primary live GTM container to use as the schema comparison baseline')
+  .action(async (analysisFile: string, opts: { gtmId?: string; primaryContainerId?: string }) => {
+    const resolvedFile = path.resolve(analysisFile);
+    const analysis = readJsonFile<SiteAnalysis>(resolvedFile);
+    const publicIds = getRequiredLiveGtmIds(analysis, opts.gtmId);
+
+    if (publicIds.length === 0) {
+      console.error('\n❌ No live GTM public IDs were found.');
+      console.error('   Re-run `analyze` on the site, or pass one explicitly with --gtm-id GTM-XXXXXXX.');
+      process.exit(1);
+    }
+
+    console.log(`\n🔍 Analyzing live GTM baseline for: ${analysis.rootUrl}`);
+    console.log(`   Containers: ${publicIds.join(', ')}`);
+
+    const liveAnalysis = await analyzeLiveGtmContainers({
+      siteUrl: analysis.rootUrl,
+      publicIds,
+    });
+
+    const meaningfulContainers = liveAnalysis.containers.filter(container =>
+      container.events.length > 0 || container.measurementIds.length > 0,
+    );
+    const requestedPrimaryId = opts.primaryContainerId?.trim().toUpperCase();
+
+    if (requestedPrimaryId) {
+      if (!liveAnalysis.containers.some(container => container.publicId === requestedPrimaryId)) {
+        console.error(`\n❌ Primary container ${requestedPrimaryId} was not part of the analyzed set.`);
+        process.exit(1);
+      }
+      liveAnalysis.primaryContainerId = requestedPrimaryId;
+    } else if (meaningfulContainers.length > 1) {
+      const selected = await selectFromList(
+        meaningfulContainers,
+        'primary comparison GTM container',
+        container => `${container.publicId} (${container.events.length} events, ${container.measurementIds.join(', ') || 'no measurement IDs'})`,
+      );
+      liveAnalysis.primaryContainerId = selected.publicId;
+    } else if (meaningfulContainers.length === 1) {
+      liveAnalysis.primaryContainerId = meaningfulContainers[0].publicId;
+    }
+
+    const artifactDir = path.dirname(resolvedFile);
+    const outFile = path.join(artifactDir, 'live-gtm-analysis.json');
+    const reviewFile = path.join(artifactDir, 'live-gtm-review.md');
+    writeJsonFile(outFile, liveAnalysis);
+    fs.writeFileSync(reviewFile, generateLiveGtmReviewMarkdown(liveAnalysis), 'utf8');
+    const workflowState = refreshWorkflowState(artifactDir);
+
+    console.log(`\n✅ Live GTM baseline analyzed:`);
+    console.log(`   Containers analyzed: ${liveAnalysis.containers.length}`);
+    console.log(`   Primary comparison container: ${liveAnalysis.primaryContainerId || 'none'}`);
+    console.log(`   Aggregated live events: ${liveAnalysis.aggregatedEvents.length}`);
+    console.log(`   Output: ${outFile}`);
+    console.log(`   Review: ${reviewFile}`);
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
+    if (workflowState.nextCommand) {
+      console.log(`   Next step: ${workflowState.nextCommand}`);
+    }
   });
 
 // STEP 2: Event schema is generated by the AI agent directly (no CLI command).
@@ -536,6 +627,9 @@ program
   .action(async (analysisFile: string) => {
     const resolvedFile = path.resolve(analysisFile);
     const analysis = readJsonFile<SiteAnalysis>(resolvedFile);
+    const artifactDir = path.dirname(resolvedFile);
+    const requiredLiveGtmIds = getRequiredLiveGtmIds(analysis);
+    let liveAnalysis: LiveGtmAnalysis | null = null;
 
     if (analysis.pageGroups.length === 0) {
       console.error('\n❌ pageGroups is empty. Complete Step 1.5 (page grouping) first.');
@@ -553,8 +647,32 @@ program
       process.exit(1);
     }
 
-    const context = buildSchemaContext(analysis);
-    const outFile = path.join(path.dirname(resolvedFile), 'schema-context.json');
+    if (requiredLiveGtmIds.length > 0) {
+      const liveAnalysisFile = path.join(artifactDir, 'live-gtm-analysis.json');
+      if (!fs.existsSync(liveAnalysisFile)) {
+        console.error('\n❌ Live GTM baseline is required before schema preparation for this site.');
+        console.error(`   Detected live containers: ${requiredLiveGtmIds.join(', ')}`);
+        console.error(`   Run: ${formatPublicCommand(['analyze-live-gtm', resolvedFile])}`);
+        process.exit(1);
+      }
+
+      liveAnalysis = readJsonFile<LiveGtmAnalysis>(liveAnalysisFile);
+      const analyzedIds = uniq((liveAnalysis.detectedContainerIds || []).map(id => id.toUpperCase()));
+      const missingIds = requiredLiveGtmIds.filter(id => !analyzedIds.includes(id));
+
+      if (missingIds.length > 0) {
+        console.error('\n❌ live-gtm-analysis.json is stale for the currently detected site containers.');
+        console.error(`   Missing container(s): ${missingIds.join(', ')}`);
+        console.error(`   Run: ${formatPublicCommand(['analyze-live-gtm', resolvedFile])}`);
+        process.exit(1);
+      }
+    } else {
+      const liveAnalysisFile = path.join(artifactDir, 'live-gtm-analysis.json');
+      liveAnalysis = tryReadJsonFile<LiveGtmAnalysis>(liveAnalysisFile);
+    }
+
+    const context = buildSchemaContext(analysis, liveAnalysis);
+    const outFile = path.join(artifactDir, 'schema-context.json');
     writeJsonFile(outFile, context);
 
     let shopifyTemplateFile: string | null = null;
@@ -566,12 +684,12 @@ program
       const bootstrap = buildShopifyBootstrapArtifacts(analysis);
       const template = bootstrap.schema;
       shopifyReviewItems = bootstrap.reviewItems;
-      shopifyTemplateFile = path.join(path.dirname(resolvedFile), 'shopify-schema-template.json');
+      shopifyTemplateFile = path.join(artifactDir, 'shopify-schema-template.json');
       writeJsonFile(shopifyTemplateFile, template);
-      shopifyReviewFile = path.join(path.dirname(resolvedFile), 'shopify-bootstrap-review.md');
+      shopifyReviewFile = path.join(artifactDir, 'shopify-bootstrap-review.md');
       fs.writeFileSync(shopifyReviewFile, bootstrap.reviewMarkdown);
 
-      const eventSchemaFile = path.join(path.dirname(resolvedFile), 'event-schema.json');
+      const eventSchemaFile = path.join(artifactDir, 'event-schema.json');
       if (!fs.existsSync(eventSchemaFile)) {
         writeJsonFile(eventSchemaFile, template);
         shopifyBootstrappedSchemaFile = eventSchemaFile;
@@ -600,12 +718,15 @@ program
     } else if (reusedExistingSchema) {
       console.log(`   Shopify event schema preserved: ${path.join(path.dirname(analysisFile), 'event-schema.json')}`);
     }
+    if (context.existingTrackingBaseline) {
+      console.log(`   Live GTM baseline: ${context.existingTrackingBaseline.totalLiveEvents} existing event(s) from ${context.existingTrackingBaseline.comparedContainerIds.join(', ')}`);
+    }
     if (shopifyReviewItems.length > 0) {
       printShopifyBootstrapSummary(shopifyReviewItems);
       console.log(`   Review details: ${shopifyReviewFile || '—'}`);
     }
-    console.log(`   Workflow state: ${path.join(path.dirname(resolvedFile), WORKFLOW_STATE_FILE)}`);
-    refreshWorkflowState(path.dirname(resolvedFile));
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
+    refreshWorkflowState(artifactDir);
   });
 
 // STEP 3: Generate GTM config
@@ -1094,6 +1215,8 @@ program
     console.log(`\n📦 Key artifacts:`);
     const artifactFlags: Array<[string, boolean]> = [
       ['site-analysis.json', workflowState.artifacts.siteAnalysis],
+      ['live-gtm-analysis.json', workflowState.artifacts.liveGtmAnalysis],
+      ['live-gtm-review.md', workflowState.artifacts.liveGtmReview],
       ['schema-context.json', workflowState.artifacts.schemaContext],
       ['event-schema.json', workflowState.artifacts.eventSchema],
       ['event-spec.md', workflowState.artifacts.eventSpec],
@@ -1143,8 +1266,13 @@ program
   .command('generate-spec <schema-file>')
   .description('Generate a human-readable event-spec.md from event-schema.json for stakeholder review')
   .action(async (schemaFile: string) => {
-    const schema = readJsonFile<EventSchema>(schemaFile);
+    const resolvedSchemaFile = path.resolve(schemaFile);
+    const artifactDir = path.dirname(resolvedSchemaFile);
+    const schema = readJsonFile<EventSchema>(resolvedSchemaFile);
     const quota = getQuotaSummary(schema);
+    const liveAnalysis = tryReadJsonFile<LiveGtmAnalysis>(path.join(artifactDir, 'live-gtm-analysis.json'));
+    const baseline = liveAnalysis ? buildExistingTrackingBaseline(liveAnalysis) : null;
+    const liveDelta = liveAnalysis ? compareSchemaToLiveTracking(schema, liveAnalysis) : null;
 
     const lines: string[] = [
       `# GA4 Event Tracking Specification`,
@@ -1166,9 +1294,90 @@ program
       ``,
       `---`,
       ``,
+    ];
+
+    if (baseline) {
+      lines.push(
+        `## Live Tracking Baseline`,
+        ``,
+        `- Primary comparison container: ${baseline.primaryContainerId ? `\`${baseline.primaryContainerId}\`` : 'none'}`,
+        `- Compared live containers: ${baseline.comparedContainerIds.map(id => `\`${id}\``).join(', ') || 'none'}`,
+        `- Existing live events parsed: ${baseline.totalLiveEvents}`,
+        `- Existing measurement IDs: ${baseline.measurementIds.join(', ') || 'none detected'}`,
+        ``,
+      );
+
+      if (baseline.events.length > 0) {
+        lines.push(
+          `| Live Event | Containers | Trigger Types | Parameters | Confidence |`,
+          `| --- | --- | --- | --- | --- |`,
+          ...baseline.events.map(event =>
+            `| \`${event.eventName}\` | ${event.containers.map(id => `\`${id}\``).join(', ')} | ${event.triggerTypes.join(', ')} | ${event.parameterNames.join(', ') || '—'} | ${event.confidence} |`,
+          ),
+          ``,
+        );
+      }
+
+      lines.push(`---`, ``);
+    }
+
+    if (baseline?.observedProblems.length) {
+      lines.push(
+        `## Current Live Tracking Issues`,
+        ``,
+        ...baseline.observedProblems.map(problem => `- ${problem}`),
+        ``,
+        `---`,
+        ``,
+      );
+    }
+
+    if (liveDelta) {
+      lines.push(
+        `## Change Summary`,
+        ``,
+        `| Event Name | Status vs Live | Improvements |`,
+        `| --- | --- | --- |`,
+        ...liveDelta.changes.map(change =>
+          `| \`${change.eventName}\` | ${change.status} | ${change.improvements.join('; ') || 'Keeps the existing live definition shape'} |`,
+        ),
+        ``,
+      );
+
+      if (liveDelta.problemsSolved.length > 0) {
+        lines.push(
+          `## What This Schema Solves`,
+          ``,
+          ...liveDelta.problemsSolved.map(problem => `- ${problem}`),
+          ``,
+        );
+      }
+
+      if (liveDelta.benefits.length > 0) {
+        lines.push(
+          `## Benefits`,
+          ``,
+          ...liveDelta.benefits.map(benefit => `- ${benefit}`),
+          ``,
+        );
+      }
+
+      if (liveDelta.carryOverWarnings.length > 0) {
+        lines.push(
+          `## Live Baseline Warnings`,
+          ``,
+          ...liveDelta.carryOverWarnings.map(warning => `- ${warning}`),
+          ``,
+        );
+      }
+
+      lines.push(`---`, ``);
+    }
+
+    lines.push(
       `## Event Details`,
       ``,
-    ];
+    );
 
     const priorityOrder = { high: 0, medium: 1, low: 2 };
     const sorted = [...schema.events].sort((a, b) =>
@@ -1227,16 +1436,22 @@ program
     lines.push(`_Generated by event-tracking-skill_`);
 
     const spec = lines.join('\n');
-    const outFile = path.join(path.dirname(schemaFile), 'event-spec.md');
+    const outFile = path.join(artifactDir, 'event-spec.md');
     fs.writeFileSync(outFile, spec, 'utf-8');
-    refreshWorkflowState(path.dirname(path.resolve(schemaFile)));
+    refreshWorkflowState(artifactDir);
 
     console.log(`\n✅ Event spec generated: ${outFile}`);
     console.log(`   ${schema.events.length} events documented`);
+    if (liveDelta) {
+      console.log(`   Live baseline comparison: ${liveDelta.reusedEventCount} reused, ${liveDelta.newEventCount} new`);
+      if (liveDelta.problemsSolved.length > 0) {
+        console.log(`   Solves: ${liveDelta.problemsSolved[0]}`);
+      }
+    }
     if (quota.customDimensions > 0) {
       console.log(`   ${quota.customDimensions} custom dimensions listed`);
     }
-    console.log(`   Workflow state: ${path.join(path.dirname(path.resolve(schemaFile)), WORKFLOW_STATE_FILE)}`);
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
   });
 
 program.parseAsync(process.argv).catch(err => {

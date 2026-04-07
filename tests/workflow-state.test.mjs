@@ -55,7 +55,7 @@ function makePageGroup() {
   };
 }
 
-function makeSiteAnalysis({ confirmed = false } = {}) {
+function makeSiteAnalysis({ confirmed = false, gtmPublicIds = [] } = {}) {
   const pageGroups = [makePageGroup()];
   const analysis = {
     rootUrl: 'https://example.com',
@@ -71,6 +71,7 @@ function makeSiteAnalysis({ confirmed = false } = {}) {
     skippedUrls: [],
     crawlWarnings: [],
     dataLayerEvents: [],
+    gtmPublicIds,
   };
 
   if (confirmed) {
@@ -120,6 +121,50 @@ test('workflow state recommends schema preparation after confirmed page groups',
   assert.equal(state.currentCheckpoint, 'group_approved');
   assert.deepEqual(state.completedCheckpoints, ['analyzed', 'grouped', 'group_approved']);
   assert.match(state.nextCommand || '', /prepare-schema/);
+});
+
+test('workflow state inserts live GTM analysis before schema preparation when GTM is detected', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const analysisFile = path.join(artifactDir, 'site-analysis.json');
+  writeJson(analysisFile, makeSiteAnalysis({
+    confirmed: true,
+    gtmPublicIds: ['GTM-AAAA111'],
+  }));
+
+  const state = refreshWorkflowState(artifactDir);
+
+  assert.equal(state.currentCheckpoint, 'group_approved');
+  assert.deepEqual(state.completedCheckpoints, ['analyzed', 'grouped', 'group_approved']);
+  assert.match(state.nextCommand || '', /analyze-live-gtm/);
+  assert.equal(state.artifacts.liveGtmAnalysis, false);
+});
+
+test('workflow state proceeds to schema preparation after live GTM analysis is present', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  writeJson(path.join(artifactDir, 'site-analysis.json'), makeSiteAnalysis({
+    confirmed: true,
+    gtmPublicIds: ['GTM-AAAA111'],
+  }));
+  writeJson(path.join(artifactDir, 'live-gtm-analysis.json'), {
+    siteUrl: 'https://example.com',
+    analyzedAt: '2026-04-07T00:00:00.000Z',
+    detectedContainerIds: ['GTM-AAAA111'],
+    primaryContainerId: 'GTM-AAAA111',
+    containers: [],
+    aggregatedEvents: [],
+    warnings: [],
+  });
+
+  const state = refreshWorkflowState(artifactDir);
+
+  assert.equal(state.currentCheckpoint, 'live_gtm_analyzed');
+  assert.deepEqual(state.completedCheckpoints, ['analyzed', 'grouped', 'group_approved', 'live_gtm_analyzed']);
+  assert.match(state.nextCommand || '', /prepare-schema/);
+  assert.equal(state.artifacts.liveGtmAnalysis, true);
 });
 
 test('confirm-page-groups updates review metadata and status can resume from a file path', t => {
