@@ -20,19 +20,28 @@ import { GTMClient, GTMAccount, GTMContainer, GTMWorkspace } from './gtm/client'
 import { syncConfigToWorkspace, dryRunSync } from './gtm/sync';
 import { validateEventSchema, getQuotaSummary } from './generator/schema-validator';
 import { buildSchemaContext } from './generator/schema-context';
+import { buildExistingTrackingBaseline, compareSchemaToLiveTracking } from './generator/live-tracking-insights';
 import { checkSelectors } from './generator/selector-check';
 import { runPreviewVerification, checkGTMOnPage } from './gtm/preview';
 import { generatePreviewReport } from './reporter/preview-report';
+import { analyzeLiveGtmContainers, generateLiveGtmReviewMarkdown, LiveGtmAnalysis } from './gtm/live-parser';
 import { isShopifyPlatform } from './crawler/platform-detector';
 import { generateShopifyPixelArtifacts } from './shopify/pixel';
 import { buildShopifyBootstrapArtifacts } from './shopify/schema-template';
-import { getJtrackingCliLines, getJtrackingMarkdownSection, JTRACKING_URL } from './jtracking-promo';
+import {
+  WORKFLOW_STATE_FILE,
+  WorkflowState,
+  getSchemaHash,
+  refreshWorkflowState,
+  resolveArtifactDirFromInput,
+} from './workflow/state';
 
 const program = new Command();
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const DEFAULT_OUTPUT_ROOT = path.join(process.cwd(), 'output');
+const PUBLIC_COMMAND = process.env.EVENT_TRACKING_PUBLIC_CMD?.trim() || 'event-tracking';
 
 function slugifyPathSegment(value: string): string {
   return value
@@ -62,6 +71,15 @@ function resolveOutputDir(outputDir: string): string {
 
 function resolveOutputRoot(outputRoot: string): string {
   return path.resolve(outputRoot);
+}
+
+function quoteShellArg(value: string): string {
+  if (/^[A-Za-z0-9_./:=+-]+$/.test(value)) return value;
+  return `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
+function formatPublicCommand(args: string[]): string {
+  return [PUBLIC_COMMAND, ...args.map(quoteShellArg)].join(' ');
 }
 
 function rl(): readline.Interface {
@@ -135,6 +153,19 @@ function writeJsonFile(file: string, value: unknown): void {
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
 }
 
+function uniq(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function parseCommaSeparatedList(value?: string): string[] {
+  return uniq(
+    (value || '')
+      .split(',')
+      .map(entry => entry.trim())
+      .filter(Boolean),
+  );
+}
+
 function printPageGroupsSummary(pageGroups: SiteAnalysis['pageGroups']): void {
   console.log('\n📋 Current page groups:');
   pageGroups.forEach((group, idx) => {
@@ -181,8 +212,6 @@ function writeShopifyPreviewInstructions(
     '',
     '- Prefer dataLayer-driven custom event triggers for Shopify ecommerce events.',
     '- DOM click triggers on storefront pages are not the primary validation path in this Shopify flow unless you also install GTM into the Shopify theme.',
-    '',
-    ...getJtrackingMarkdownSection('shopify'),
   ];
 
   fs.writeFileSync(reportFile, lines.join('\n'));
@@ -236,6 +265,12 @@ async function selectFromList<T extends { name?: string; publicId?: string }>(
     throw new Error(`Invalid selection: ${answer}`);
   }
   return items[idx];
+}
+
+function getRequiredLiveGtmIds(analysis: SiteAnalysis, override?: string): string[] {
+  const fromOverride = parseCommaSeparatedList(override).map(id => id.toUpperCase());
+  if (fromOverride.length > 0) return fromOverride;
+  return uniq((analysis.gtmPublicIds || []).map(id => id.toUpperCase()));
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
@@ -300,6 +335,7 @@ program
 
     const outFile = path.join(dir, 'site-analysis.json');
     writeJsonFile(outFile, siteAnalysis);
+    const workflowState = refreshWorkflowState(dir);
 
     console.log(`\n✅ Analysis complete:`);
     console.log(`   Pages analyzed: ${siteAnalysis.pages.length}`);
@@ -308,6 +344,9 @@ program
     console.log(`   Platform: ${siteAnalysis.platform.type} (${siteAnalysis.platform.confidence})`);
     if (siteAnalysis.platform.signals.length > 0) {
       console.log(`   Platform signals: ${siteAnalysis.platform.signals.join(', ')}`);
+    }
+    if ((siteAnalysis.gtmPublicIds || []).length > 0) {
+      console.log(`   Live GTM containers: ${(siteAnalysis.gtmPublicIds || []).join(', ')}`);
     }
 
     if (siteAnalysis.crawlWarnings.length > 0) {
@@ -318,6 +357,10 @@ program
     }
 
     console.log(`\n   Output: ${outFile}`);
+    console.log(`   Workflow state: ${path.join(dir, WORKFLOW_STATE_FILE)}`);
+    if (workflowState.nextCommand) {
+      console.log(`   Next step: ${workflowState.nextCommand}`);
+    }
   });
 
 // STEP 1.5: Confirm page groups before schema preparation
@@ -356,10 +399,78 @@ program
       confirmedHash: currentHash,
     };
     writeJsonFile(resolvedFile, analysis);
+    const workflowState = refreshWorkflowState(resolveArtifactDirFromFile(resolvedFile));
 
     console.log(`\n✅ Page groups confirmed.`);
     console.log(`   Confirmation recorded in: ${resolvedFile}`);
-    console.log(`   Next step: node dist/cli.js prepare-schema ${resolvedFile}`);
+    if (workflowState.nextCommand) {
+      console.log(`   Next step: ${workflowState.nextCommand}`);
+    }
+  });
+
+program
+  .command('analyze-live-gtm <site-analysis-file>')
+  .description('Fetch and analyze the public live GTM runtime before schema generation')
+  .option('--gtm-id <ids>', 'Comma-separated GTM public IDs to analyze instead of the IDs detected during crawl')
+  .option('--primary-container-id <id>', 'Primary live GTM container to use as the schema comparison baseline')
+  .action(async (analysisFile: string, opts: { gtmId?: string; primaryContainerId?: string }) => {
+    const resolvedFile = path.resolve(analysisFile);
+    const analysis = readJsonFile<SiteAnalysis>(resolvedFile);
+    const publicIds = getRequiredLiveGtmIds(analysis, opts.gtmId);
+
+    if (publicIds.length === 0) {
+      console.error('\n❌ No live GTM public IDs were found.');
+      console.error('   Re-run `analyze` on the site, or pass one explicitly with --gtm-id GTM-XXXXXXX.');
+      process.exit(1);
+    }
+
+    console.log(`\n🔍 Analyzing live GTM baseline for: ${analysis.rootUrl}`);
+    console.log(`   Containers: ${publicIds.join(', ')}`);
+
+    const liveAnalysis = await analyzeLiveGtmContainers({
+      siteUrl: analysis.rootUrl,
+      publicIds,
+    });
+
+    const meaningfulContainers = liveAnalysis.containers.filter(container =>
+      container.events.length > 0 || container.measurementIds.length > 0,
+    );
+    const requestedPrimaryId = opts.primaryContainerId?.trim().toUpperCase();
+
+    if (requestedPrimaryId) {
+      if (!liveAnalysis.containers.some(container => container.publicId === requestedPrimaryId)) {
+        console.error(`\n❌ Primary container ${requestedPrimaryId} was not part of the analyzed set.`);
+        process.exit(1);
+      }
+      liveAnalysis.primaryContainerId = requestedPrimaryId;
+    } else if (meaningfulContainers.length > 1) {
+      const selected = await selectFromList(
+        meaningfulContainers,
+        'primary comparison GTM container',
+        container => `${container.publicId} (${container.events.length} events, ${container.measurementIds.join(', ') || 'no measurement IDs'})`,
+      );
+      liveAnalysis.primaryContainerId = selected.publicId;
+    } else if (meaningfulContainers.length === 1) {
+      liveAnalysis.primaryContainerId = meaningfulContainers[0].publicId;
+    }
+
+    const artifactDir = path.dirname(resolvedFile);
+    const outFile = path.join(artifactDir, 'live-gtm-analysis.json');
+    const reviewFile = path.join(artifactDir, 'live-gtm-review.md');
+    writeJsonFile(outFile, liveAnalysis);
+    fs.writeFileSync(reviewFile, generateLiveGtmReviewMarkdown(liveAnalysis), 'utf8');
+    const workflowState = refreshWorkflowState(artifactDir);
+
+    console.log(`\n✅ Live GTM baseline analyzed:`);
+    console.log(`   Containers analyzed: ${liveAnalysis.containers.length}`);
+    console.log(`   Primary comparison container: ${liveAnalysis.primaryContainerId || 'none'}`);
+    console.log(`   Aggregated live events: ${liveAnalysis.aggregatedEvents.length}`);
+    console.log(`   Output: ${outFile}`);
+    console.log(`   Review: ${reviewFile}`);
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
+    if (workflowState.nextCommand) {
+      console.log(`   Next step: ${workflowState.nextCommand}`);
+    }
   });
 
 // STEP 2: Event schema is generated by the AI agent directly (no CLI command).
@@ -445,6 +556,70 @@ program
     if (errs.length > 0) process.exit(1);
   });
 
+program
+  .command('confirm-schema <schema-file>')
+  .description('Confirm the current event-schema.json before GTM config generation')
+  .option('--yes', 'Skip confirmation prompt and mark the current schema as approved')
+  .action(async (schemaFile: string, opts: { yes?: boolean }) => {
+    const resolvedFile = path.resolve(schemaFile);
+    const schema = readJsonFile<EventSchema>(resolvedFile);
+    const issues = validateEventSchema(schema);
+    const errs = issues.filter(issue => issue.severity === 'error');
+    const warns = issues.filter(issue => issue.severity === 'warning');
+
+    if (warns.length > 0) {
+      console.log(`\n⚠️  Schema warnings:`);
+      for (const warning of warns) console.log(`   [${warning.field}] ${warning.message}`);
+    }
+    if (errs.length > 0) {
+      console.log(`\n❌ Schema validation failed (${errs.length} error(s)):`);
+      for (const error of errs) console.log(`   [${error.field}] ${error.message}`);
+      console.log(`\nFix the errors in ${resolvedFile} before confirming the schema.`);
+      process.exit(1);
+    }
+
+    const artifactDir = resolveArtifactDirFromFile(resolvedFile);
+    const currentHash = getSchemaHash(schema);
+    const existingState = refreshWorkflowState(artifactDir);
+    const quota = getQuotaSummary(schema);
+
+    console.log(`\n📋 Schema review summary:`);
+    console.log(`   Events: ${schema.events.length}`);
+    console.log(`   Custom dimensions: ${quota.customDimensions}`);
+    console.log(`   Artifact directory: ${artifactDir}`);
+
+    if (
+      existingState.schemaReview.status === 'confirmed' &&
+      existingState.schemaReview.confirmedHash === currentHash
+    ) {
+      console.log(`\nℹ️  This schema is already confirmed${existingState.schemaReview.confirmedAt ? ` (${existingState.schemaReview.confirmedAt})` : ''}.`);
+      return;
+    }
+
+    if (!opts.yes) {
+      const answer = await prompt('\nConfirm this schema for GTM generation? (yes/no): ');
+      if (answer.toLowerCase() !== 'yes') {
+        console.log('Schema confirmation cancelled.');
+        return;
+      }
+    }
+
+    const workflowState = refreshWorkflowState(artifactDir, {
+      schemaReview: {
+        status: 'confirmed',
+        confirmedAt: new Date().toISOString(),
+        confirmedHash: currentHash,
+      },
+    });
+
+    console.log(`\n✅ Schema confirmed.`);
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
+    if (!workflowState.artifacts.eventSpec) {
+      console.log(`   Recommended next step: ${formatPublicCommand(['generate-spec', resolvedFile])}`);
+    }
+    console.log(`   Next step: ${formatPublicCommand(['generate-gtm', resolvedFile, '--measurement-id', '<G-XXXXXXXXXX>'])}`);
+  });
+
 // STEP 2.1: Prepare compressed context for AI event schema generation
 program
   .command('prepare-schema <site-analysis-file>')
@@ -452,6 +627,9 @@ program
   .action(async (analysisFile: string) => {
     const resolvedFile = path.resolve(analysisFile);
     const analysis = readJsonFile<SiteAnalysis>(resolvedFile);
+    const artifactDir = path.dirname(resolvedFile);
+    const requiredLiveGtmIds = getRequiredLiveGtmIds(analysis);
+    let liveAnalysis: LiveGtmAnalysis | null = null;
 
     if (analysis.pageGroups.length === 0) {
       console.error('\n❌ pageGroups is empty. Complete Step 1.5 (page grouping) first.');
@@ -465,12 +643,36 @@ program
       } else {
         console.error('   Review the current groups with the user and record approval before continuing.');
       }
-      console.error(`   Run: node dist/cli.js confirm-page-groups ${resolvedFile}`);
+      console.error(`   Run: ${formatPublicCommand(['confirm-page-groups', resolvedFile])}`);
       process.exit(1);
     }
 
-    const context = buildSchemaContext(analysis);
-    const outFile = path.join(path.dirname(resolvedFile), 'schema-context.json');
+    if (requiredLiveGtmIds.length > 0) {
+      const liveAnalysisFile = path.join(artifactDir, 'live-gtm-analysis.json');
+      if (!fs.existsSync(liveAnalysisFile)) {
+        console.error('\n❌ Live GTM baseline is required before schema preparation for this site.');
+        console.error(`   Detected live containers: ${requiredLiveGtmIds.join(', ')}`);
+        console.error(`   Run: ${formatPublicCommand(['analyze-live-gtm', resolvedFile])}`);
+        process.exit(1);
+      }
+
+      liveAnalysis = readJsonFile<LiveGtmAnalysis>(liveAnalysisFile);
+      const analyzedIds = uniq((liveAnalysis.detectedContainerIds || []).map(id => id.toUpperCase()));
+      const missingIds = requiredLiveGtmIds.filter(id => !analyzedIds.includes(id));
+
+      if (missingIds.length > 0) {
+        console.error('\n❌ live-gtm-analysis.json is stale for the currently detected site containers.');
+        console.error(`   Missing container(s): ${missingIds.join(', ')}`);
+        console.error(`   Run: ${formatPublicCommand(['analyze-live-gtm', resolvedFile])}`);
+        process.exit(1);
+      }
+    } else {
+      const liveAnalysisFile = path.join(artifactDir, 'live-gtm-analysis.json');
+      liveAnalysis = tryReadJsonFile<LiveGtmAnalysis>(liveAnalysisFile);
+    }
+
+    const context = buildSchemaContext(analysis, liveAnalysis);
+    const outFile = path.join(artifactDir, 'schema-context.json');
     writeJsonFile(outFile, context);
 
     let shopifyTemplateFile: string | null = null;
@@ -482,12 +684,12 @@ program
       const bootstrap = buildShopifyBootstrapArtifacts(analysis);
       const template = bootstrap.schema;
       shopifyReviewItems = bootstrap.reviewItems;
-      shopifyTemplateFile = path.join(path.dirname(resolvedFile), 'shopify-schema-template.json');
+      shopifyTemplateFile = path.join(artifactDir, 'shopify-schema-template.json');
       writeJsonFile(shopifyTemplateFile, template);
-      shopifyReviewFile = path.join(path.dirname(resolvedFile), 'shopify-bootstrap-review.md');
+      shopifyReviewFile = path.join(artifactDir, 'shopify-bootstrap-review.md');
       fs.writeFileSync(shopifyReviewFile, bootstrap.reviewMarkdown);
 
-      const eventSchemaFile = path.join(path.dirname(resolvedFile), 'event-schema.json');
+      const eventSchemaFile = path.join(artifactDir, 'event-schema.json');
       if (!fs.existsSync(eventSchemaFile)) {
         writeJsonFile(eventSchemaFile, template);
         shopifyBootstrappedSchemaFile = eventSchemaFile;
@@ -516,10 +718,15 @@ program
     } else if (reusedExistingSchema) {
       console.log(`   Shopify event schema preserved: ${path.join(path.dirname(analysisFile), 'event-schema.json')}`);
     }
+    if (context.existingTrackingBaseline) {
+      console.log(`   Live GTM baseline: ${context.existingTrackingBaseline.totalLiveEvents} existing event(s) from ${context.existingTrackingBaseline.comparedContainerIds.join(', ')}`);
+    }
     if (shopifyReviewItems.length > 0) {
       printShopifyBootstrapSummary(shopifyReviewItems);
       console.log(`   Review details: ${shopifyReviewFile || '—'}`);
     }
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
+    refreshWorkflowState(artifactDir);
   });
 
 // STEP 3: Generate GTM config
@@ -529,8 +736,10 @@ program
   .option('--output-dir <dir>', 'Directory for generated files (default: same directory as <schema-file>)')
   .option('--measurement-id <id>', 'GA4 Measurement ID (G-XXXXXXXXXX)')
   .option('--google-tag-id <id>', 'Optional Google tag ID (GT-/G-/AW-...). Used for the configuration tag target when provided')
-  .action(async (schemaFile: string, opts: { measurementId?: string; googleTagId?: string; outputDir?: string }) => {
+  .option('--force', 'Generate GTM config without a current schema confirmation')
+  .action(async (schemaFile: string, opts: { measurementId?: string; googleTagId?: string; outputDir?: string; force?: boolean }) => {
     const schema = readJsonFile<EventSchema>(schemaFile);
+    const artifactDir = path.dirname(path.resolve(schemaFile));
 
     // Validate schema before generating
     const issues = validateEventSchema(schema);
@@ -545,6 +754,17 @@ program
       console.log(`\n❌ Schema validation failed (${errs.length} error(s)):`);
       for (const e of errs) console.log(`   [${e.field}] ${e.message}`);
       console.log(`\nFix the errors in ${schemaFile} before generating GTM config.`);
+      process.exit(1);
+    }
+
+    const workflowState = refreshWorkflowState(artifactDir);
+    if (!opts.force && workflowState.schemaReview.status !== 'confirmed') {
+      console.error('\n❌ event-schema.json is not currently confirmed.');
+      if (workflowState.warnings.length > 0) {
+        workflowState.warnings.forEach(warning => console.error(`   ${warning}`));
+      }
+      console.error(`   Run: ${formatPublicCommand(['confirm-schema', path.resolve(schemaFile)])}`);
+      console.error('   Use --force only if you intentionally want to bypass the schema approval gate.');
       process.exit(1);
     }
 
@@ -563,9 +783,10 @@ program
 
     const dir = opts.outputDir
       ? resolveOutputDir(opts.outputDir)
-      : path.dirname(path.resolve(schemaFile));
+      : artifactDir;
     const outFile = path.join(dir, 'gtm-config.json');
     fs.writeFileSync(outFile, JSON.stringify(config, null, 2));
+    refreshWorkflowState(dir);
 
     const { tag: tags, trigger: triggers, variable: variables } = config.containerVersion;
     console.log(`\n✅ GTM configuration generated:`);
@@ -601,6 +822,7 @@ program
       console.log(`\n   ⚠️  Do not proceed to sync/publish until all dimensions are registered.`);
       console.log(`${'═'.repeat(60)}`);
     }
+    console.log(`   Workflow state: ${path.join(dir, WORKFLOW_STATE_FILE)}`);
   });
 
 // STEP 4+5: Auth, select workspace, and sync
@@ -711,6 +933,7 @@ program
       syncedAt: new Date().toISOString(),
     }, null, 2));
     console.log(`\n   GTM context saved: ${contextFile}`);
+    refreshWorkflowState(artifactDir);
 
     const siteAnalysis = tryReadJsonFile<SiteAnalysis>(path.join(artifactDir, 'site-analysis.json'));
     if (siteAnalysis && isShopifyPlatform(siteAnalysis.platform)) {
@@ -729,14 +952,14 @@ program
         console.log(`   Pixel: ${pixelFile}`);
         console.log(`   Install guide: ${installFile}`);
         console.log(`   Event mappings: ${artifacts.mappings.map(m => `${m.shopifyEventName}->${m.ga4EventName}`).join(', ')}`);
-        console.log(`\n   Next step: install the Shopify custom pixel, then validate with the 'preview' command for manual verification guidance.`);
-        getJtrackingCliLines('sync').forEach(line => console.log(line));
+        console.log(`\n   Next step: install the Shopify custom pixel, then run`);
+        console.log(`   ${formatPublicCommand(['preview', path.join(artifactDir, 'event-schema.json'), '--context-file', contextFile])}`);
         return;
       }
     }
 
-    console.log(`\n   Next step: run 'preview' command to verify events`);
-    getJtrackingCliLines('sync').forEach(line => console.log(line));
+    console.log(`\n   Next step:`);
+    console.log(`   ${formatPublicCommand(['preview', path.join(artifactDir, 'event-schema.json'), '--context-file', contextFile])}`);
   });
 
 // STEP 6: Run preview verification
@@ -790,10 +1013,17 @@ program
       console.log(`\n🛍️  Shopify site detected. Skipping automated browser preview.`);
       const dir = path.dirname(schemaFile);
       const { reportFile, jsonFile } = writeShopifyPreviewInstructions(dir, siteAnalysis, gtmPublicId);
+      refreshWorkflowState(dir, {
+        verification: {
+          status: 'completed',
+          verifiedAt: new Date().toISOString(),
+          reportFile,
+          resultFile: jsonFile,
+        },
+      });
       console.log(`   Manual verification guide saved to: ${reportFile}`);
       console.log(`   Preview metadata saved to: ${jsonFile}`);
       console.log(`\n   Next step: install the Shopify custom pixel, publish the GTM workspace, and validate in GA4 Realtime.`);
-      console.log(`   If you want a more complete setup beyond this Shopify flow, ${JTRACKING_URL} also provides server-side tracking capabilities.`);
       return;
     }
 
@@ -857,6 +1087,16 @@ program
 
     const jsonFile = path.join(dir, 'preview-result.json');
     fs.writeFileSync(jsonFile, JSON.stringify(previewResult, null, 2));
+    refreshWorkflowState(dir, {
+      verification: {
+        status: 'completed',
+        verifiedAt: previewResult.previewEndedAt,
+        reportFile,
+        resultFile: jsonFile,
+        totalExpected: previewResult.totalExpected,
+        totalFired: previewResult.totalFired,
+      },
+    });
 
     console.log('\n' + '─'.repeat(60));
     console.log(report);
@@ -865,7 +1105,8 @@ program
     console.log(`   Raw data saved to: ${jsonFile}`);
 
     if (previewResult.totalFired > 0) {
-      console.log(`\n   Next step: run 'publish' command to publish the container`);
+      console.log(`\n   Next step:`);
+      console.log(`   ${formatPublicCommand(['publish', '--context-file', path.join(dir, 'gtm-context.json'), '--version-name', 'GA4 Events v1'])}`);
     }
   });
 
@@ -936,8 +1177,71 @@ program
     console.log(`   Version ID: ${result.versionId}`);
     console.log(`\n   The GA4 event tracking is now LIVE on your website.`);
     console.log(`   Monitor events in GA4 Realtime: https://analytics.google.com/`);
-    console.log('');
-    getJtrackingCliLines('publish').forEach(line => console.log(line));
+    refreshWorkflowState(artifactDir, {
+      publish: {
+        status: 'completed',
+        publishedAt: new Date().toISOString(),
+        versionId: result.versionId,
+        versionName: opts.versionName,
+      },
+    });
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
+  });
+
+program
+  .command('status <artifact-path>')
+  .description('Inspect workflow state for an artifact directory or one of its files')
+  .action((artifactPath: string) => {
+    const artifactDir = resolveArtifactDirFromInput(artifactPath);
+    const workflowState = refreshWorkflowState(artifactDir);
+
+    console.log(`\n📍 Workflow status`);
+    console.log(`   Artifact directory: ${workflowState.artifactDir}`);
+    console.log(`   Current checkpoint: ${workflowState.currentCheckpoint}`);
+    if (workflowState.siteUrl) {
+      console.log(`   Site: ${workflowState.siteUrl}`);
+    }
+    if (workflowState.platformType) {
+      console.log(`   Platform: ${workflowState.platformType}`);
+    }
+
+    console.log(`\n✅ Completed checkpoints:`);
+    if (workflowState.completedCheckpoints.length === 0) {
+      console.log('   none');
+    } else {
+      workflowState.completedCheckpoints.forEach(checkpoint => console.log(`   - ${checkpoint}`));
+    }
+
+    console.log(`\n📦 Key artifacts:`);
+    const artifactFlags: Array<[string, boolean]> = [
+      ['site-analysis.json', workflowState.artifacts.siteAnalysis],
+      ['live-gtm-analysis.json', workflowState.artifacts.liveGtmAnalysis],
+      ['live-gtm-review.md', workflowState.artifacts.liveGtmReview],
+      ['schema-context.json', workflowState.artifacts.schemaContext],
+      ['event-schema.json', workflowState.artifacts.eventSchema],
+      ['event-spec.md', workflowState.artifacts.eventSpec],
+      ['gtm-config.json', workflowState.artifacts.gtmConfig],
+      ['gtm-context.json', workflowState.artifacts.gtmContext],
+      ['preview-report.md', workflowState.artifacts.previewReport],
+      [WORKFLOW_STATE_FILE, true],
+    ];
+    artifactFlags.forEach(([label, present]) => {
+      console.log(`   - ${label}: ${present ? 'present' : 'missing'}`);
+    });
+
+    console.log(`\n🛂 Review gates:`);
+    console.log(`   - page groups: ${workflowState.pageGroupsReview.status}${workflowState.pageGroupsReview.confirmedAt ? ` (${workflowState.pageGroupsReview.confirmedAt})` : ''}`);
+    console.log(`   - schema: ${workflowState.schemaReview.status}${workflowState.schemaReview.confirmedAt ? ` (${workflowState.schemaReview.confirmedAt})` : ''}`);
+
+    if (workflowState.warnings.length > 0) {
+      console.log(`\n⚠️  Warnings:`);
+      workflowState.warnings.forEach(warning => console.log(`   - ${warning}`));
+    }
+
+    console.log(`\n➡️  Next action: ${workflowState.nextAction}`);
+    if (workflowState.nextCommand) {
+      console.log(`   ${workflowState.nextCommand}`);
+    }
   });
 
 // Auth management
@@ -962,8 +1266,13 @@ program
   .command('generate-spec <schema-file>')
   .description('Generate a human-readable event-spec.md from event-schema.json for stakeholder review')
   .action(async (schemaFile: string) => {
-    const schema = readJsonFile<EventSchema>(schemaFile);
+    const resolvedSchemaFile = path.resolve(schemaFile);
+    const artifactDir = path.dirname(resolvedSchemaFile);
+    const schema = readJsonFile<EventSchema>(resolvedSchemaFile);
     const quota = getQuotaSummary(schema);
+    const liveAnalysis = tryReadJsonFile<LiveGtmAnalysis>(path.join(artifactDir, 'live-gtm-analysis.json'));
+    const baseline = liveAnalysis ? buildExistingTrackingBaseline(liveAnalysis) : null;
+    const liveDelta = liveAnalysis ? compareSchemaToLiveTracking(schema, liveAnalysis) : null;
 
     const lines: string[] = [
       `# GA4 Event Tracking Specification`,
@@ -985,9 +1294,90 @@ program
       ``,
       `---`,
       ``,
+    ];
+
+    if (baseline) {
+      lines.push(
+        `## Live Tracking Baseline`,
+        ``,
+        `- Primary comparison container: ${baseline.primaryContainerId ? `\`${baseline.primaryContainerId}\`` : 'none'}`,
+        `- Compared live containers: ${baseline.comparedContainerIds.map(id => `\`${id}\``).join(', ') || 'none'}`,
+        `- Existing live events parsed: ${baseline.totalLiveEvents}`,
+        `- Existing measurement IDs: ${baseline.measurementIds.join(', ') || 'none detected'}`,
+        ``,
+      );
+
+      if (baseline.events.length > 0) {
+        lines.push(
+          `| Live Event | Containers | Trigger Types | Parameters | Confidence |`,
+          `| --- | --- | --- | --- | --- |`,
+          ...baseline.events.map(event =>
+            `| \`${event.eventName}\` | ${event.containers.map(id => `\`${id}\``).join(', ')} | ${event.triggerTypes.join(', ')} | ${event.parameterNames.join(', ') || '—'} | ${event.confidence} |`,
+          ),
+          ``,
+        );
+      }
+
+      lines.push(`---`, ``);
+    }
+
+    if (baseline?.observedProblems.length) {
+      lines.push(
+        `## Current Live Tracking Issues`,
+        ``,
+        ...baseline.observedProblems.map(problem => `- ${problem}`),
+        ``,
+        `---`,
+        ``,
+      );
+    }
+
+    if (liveDelta) {
+      lines.push(
+        `## Change Summary`,
+        ``,
+        `| Event Name | Status vs Live | Improvements |`,
+        `| --- | --- | --- |`,
+        ...liveDelta.changes.map(change =>
+          `| \`${change.eventName}\` | ${change.status} | ${change.improvements.join('; ') || 'Keeps the existing live definition shape'} |`,
+        ),
+        ``,
+      );
+
+      if (liveDelta.problemsSolved.length > 0) {
+        lines.push(
+          `## What This Schema Solves`,
+          ``,
+          ...liveDelta.problemsSolved.map(problem => `- ${problem}`),
+          ``,
+        );
+      }
+
+      if (liveDelta.benefits.length > 0) {
+        lines.push(
+          `## Benefits`,
+          ``,
+          ...liveDelta.benefits.map(benefit => `- ${benefit}`),
+          ``,
+        );
+      }
+
+      if (liveDelta.carryOverWarnings.length > 0) {
+        lines.push(
+          `## Live Baseline Warnings`,
+          ``,
+          ...liveDelta.carryOverWarnings.map(warning => `- ${warning}`),
+          ``,
+        );
+      }
+
+      lines.push(`---`, ``);
+    }
+
+    lines.push(
       `## Event Details`,
       ``,
-    ];
+    );
 
     const priorityOrder = { high: 0, medium: 1, low: 2 };
     const sorted = [...schema.events].sort((a, b) =>
@@ -1046,14 +1436,22 @@ program
     lines.push(`_Generated by event-tracking-skill_`);
 
     const spec = lines.join('\n');
-    const outFile = path.join(path.dirname(schemaFile), 'event-spec.md');
+    const outFile = path.join(artifactDir, 'event-spec.md');
     fs.writeFileSync(outFile, spec, 'utf-8');
+    refreshWorkflowState(artifactDir);
 
     console.log(`\n✅ Event spec generated: ${outFile}`);
     console.log(`   ${schema.events.length} events documented`);
+    if (liveDelta) {
+      console.log(`   Live baseline comparison: ${liveDelta.reusedEventCount} reused, ${liveDelta.newEventCount} new`);
+      if (liveDelta.problemsSolved.length > 0) {
+        console.log(`   Solves: ${liveDelta.problemsSolved[0]}`);
+      }
+    }
     if (quota.customDimensions > 0) {
       console.log(`   ${quota.customDimensions} custom dimensions listed`);
     }
+    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
   });
 
 program.parseAsync(process.argv).catch(err => {

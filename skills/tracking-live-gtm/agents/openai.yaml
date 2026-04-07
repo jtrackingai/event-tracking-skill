@@ -1,0 +1,7 @@
+interface:
+  display_name: "Tracking Live GTM"
+  short_description: "Audit the real live GTM runtime before schema design"
+  default_prompt: "Use $tracking-live-gtm to inspect the site's real live GTM setup before generating or revising the event schema."
+
+policy:
+  allow_implicit_invocation: false
