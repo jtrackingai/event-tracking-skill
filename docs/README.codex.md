@@ -29,7 +29,9 @@ npm run install:skills
 
 Use this when you want a self-contained installed copy that does not depend on the repo after installation.
 
-Copy-mode installs are also the auto-update path. The installed skill bundle can check the GitHub `VERSION` file during use and reinstall the same selected bundle set when a newer version is available.
+Copy-mode installs are the recommended auto-update path. The installed skill bundle can check the GitHub `VERSION` file during use and reinstall the same selected bundle set when a newer version is available.
+
+Portable Codex installs such as `npx skills add ...` on the root skill can also self-check for updates. After the first successful self-update, that portable install is rewritten into the normal copy-mode layout.
 
 Link mode keeps the installed skills pointed at `dist/skill-bundles/` inside this repository:
 
@@ -37,7 +39,7 @@ Link mode keeps the installed skills pointed at `dist/skill-bundles/` inside thi
 npm run install:skills -- --mode link
 ```
 
-Use this during local iteration. After changing skill text or metadata, rerun:
+Use this during local iteration only. After changing skill text or metadata, rerun:
 
 ```bash
 npm run export:skills
@@ -45,7 +47,7 @@ npm run export:skills
 
 The linked install keeps the same target path, so exported bundle refreshes show up without another copy step.
 
-Link mode intentionally does not auto-update from GitHub.
+Link mode intentionally does not auto-update from GitHub and is not the recommended end-user install path.
 
 ## Common Variants
 
@@ -76,7 +78,7 @@ git pull
 npm run export:skills
 ```
 
-If your installed copy predates the auto-update bootstrap, reinstall once first:
+If your installer-managed copy predates the installed auto-update bootstrap, reinstall once first:
 
 ```bash
 npm run install:skills
@@ -115,7 +117,9 @@ npm run install:skills -- --dry-run
 
 - In Codex environments, run Playwright-backed commands such as `./event-tracking analyze ...` and `./event-tracking preview ...` outside the sandbox from the start. Do not burn a first sandbox attempt before rerunning outside it.
 - Treat `./event-tracking sync ...` the same way when OAuth may need a local callback on `127.0.0.1`.
-- Auto-update only exists on installer-managed copy installs. Older copied bundles and link-mode installs do not self-update.
+- Link-mode installs do not auto-update.
+- Older installer-managed copies need one reinstall before they gain the installed auto-update bootstrap.
+- Portable root-skill installs can self-check for updates, but direct phase-skill copies that omit `runtime/skill-runtime/` cannot.
 - If the skills are missing, run `npm run export:skills` and then reinstall.
 - If Codex does not pick up newly installed skills immediately, restart the Codex session after installation.
 - If linked installs appear stale, confirm that `dist/skill-bundles/` was regenerated after the last skill-text change.

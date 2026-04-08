@@ -8,6 +8,8 @@ import {
   getSkillBundles,
   loadSourceSkillManifest,
   normalizeSkillContent,
+  SKILL_FAMILY_NAME,
+  SKILL_FAMILY_REPOSITORY,
 } from './skill-bundles.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,6 +61,8 @@ function exportBundle(bundle) {
   writeFile(path.join(outputPath, 'bundle.json'), JSON.stringify({
     name: bundle.name,
     kind: bundle.kind,
+    familyName: SKILL_FAMILY_NAME,
+    repository: SKILL_FAMILY_REPOSITORY,
     familyVersion,
     updateSource: {
       provider: 'github-tarball',

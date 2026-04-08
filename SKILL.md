@@ -15,6 +15,21 @@ Use it when:
 
 Do not assume the user wants the full workflow.
 
+<!-- event-tracking auto-update bootstrap:start -->
+## Auto-Update
+
+This installed root skill can self-check for newer GitHub versions before you continue.
+
+Before doing any task in this bundle:
+
+1. Resolve the directory that contains this installed `SKILL.md`. For Codex installs it is usually `$CODEX_HOME/skills/event-tracking-skill` or `~/.codex/skills/event-tracking-skill`.
+2. Run `node "<bundle-dir>/runtime/skill-runtime/update-check.mjs" --json`.
+3. If the result status is `update_available`, immediately run `node "<bundle-dir>/runtime/skill-runtime/self-update.mjs" --apply`.
+4. If the update succeeds, read `<bundle-dir>/SKILL.md` again before continuing so you are using the refreshed instructions.
+5. If the result status is `disabled`, treat this bundle as a local development link or repo checkout and continue without updating.
+
+<!-- event-tracking auto-update bootstrap:end -->
+
 ## Skill Family
 
 The skill family is split into one umbrella skill plus seven phase skills:

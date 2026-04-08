@@ -23,7 +23,7 @@ Options:
   --target-dir <path>   Install into this directory instead of \$CODEX_HOME/skills or ~/.codex/skills
   --skill <name>        Install only the named skill bundle (repeatable)
   --mode <copy|link>    Copy bundles into the target directory or link them in place
-                        copy installs get installed auto-update metadata; link installs stay local-only
+                        copy installs get installed auto-update metadata; link installs are local-development-only and disable auto-update
   --skip-export         Reuse the current dist/skill-bundles output instead of regenerating it first
   --dry-run             Print the installation plan without copying files
   -h, --help            Show this help message
@@ -165,13 +165,42 @@ function quoteMarkdownPath(targetPath) {
   return targetPath.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
 }
 
-function prependAutoUpdateBootstrap(skillFile, scriptDir, selectedBundles) {
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function injectAfterFrontmatter(content, insertedContent) {
+  if (!content.startsWith('---\n')) {
+    return `${insertedContent}${content}`;
+  }
+
+  const closingIndex = content.indexOf('\n---\n', 4);
+  if (closingIndex === -1) {
+    return `${insertedContent}${content}`;
+  }
+
+  const insertAt = closingIndex + '\n---\n'.length;
+  return `${content.slice(0, insertAt)}\n${insertedContent}${content.slice(insertAt)}`;
+}
+
+function writeAutoUpdateBootstrap(skillFile, bootstrap) {
+  const originalContent = fs.readFileSync(skillFile, 'utf8');
+  const markerStart = '<!-- event-tracking auto-update bootstrap:start -->';
+  const markerEnd = '<!-- event-tracking auto-update bootstrap:end -->';
+  const markerPattern = new RegExp(`${escapeRegExp(markerStart)}[\\s\\S]*?${escapeRegExp(markerEnd)}\\n?`);
+  const nextContent = markerPattern.test(originalContent)
+    ? originalContent.replace(markerPattern, `${bootstrap}\n`)
+    : injectAfterFrontmatter(originalContent, bootstrap);
+
+  fs.writeFileSync(skillFile, nextContent);
+}
+
+function buildInstalledAutoUpdateBootstrap(skillFile, scriptDir, selectedBundles) {
   const checkScript = path.join(scriptDir, 'update-check.mjs');
   const updateScript = path.join(scriptDir, 'self-update.mjs');
   const refreshedSkill = skillFile;
   const selectedLabel = selectedBundles.join(', ');
-  const originalContent = fs.readFileSync(skillFile, 'utf8');
-  const bootstrap = [
+  return [
     '<!-- event-tracking auto-update bootstrap:start -->',
     '## Installed Auto-Update',
     '',
@@ -187,10 +216,7 @@ function prependAutoUpdateBootstrap(skillFile, scriptDir, selectedBundles) {
     '',
     'If the status is `up_to_date` or `disabled`, continue with the current installed version.',
     '<!-- event-tracking auto-update bootstrap:end -->',
-    '',
   ].join('\n');
-
-  fs.writeFileSync(skillFile, `${bootstrap}${originalContent}`);
 }
 
 function writeInstallMetadata(targetRoot, bundle, selectedBundles, autoUpdateEnabled) {
@@ -222,10 +248,13 @@ function writeInstallMetadata(targetRoot, bundle, selectedBundles, autoUpdateEna
     return;
   }
 
-  prependAutoUpdateBootstrap(
+  writeAutoUpdateBootstrap(
     path.join(targetPath, 'SKILL.md'),
-    path.join(targetPath, 'runtime', 'skill-runtime'),
-    selectedBundles,
+    buildInstalledAutoUpdateBootstrap(
+      path.join(targetPath, 'SKILL.md'),
+      path.join(targetPath, 'runtime', 'skill-runtime'),
+      selectedBundles,
+    ),
   );
 }
 

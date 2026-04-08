@@ -45,7 +45,9 @@ npm run install:skills
 
 Use this for normal users.
 
-Copy-mode installs are also the supported auto-update path. The installed skill bundle can check the GitHub `VERSION` file during use and reinstall the same selected bundle set when a newer version is available.
+Copy-mode installs are the recommended auto-update path. The installed skill bundle can check the GitHub `VERSION` file during use and reinstall the same selected bundle set when a newer version is available.
+
+Portable installs such as `npx skills add ...` on the root skill or manual copies of exported bundles can also self-check for updates as long as the installed directory includes `runtime/skill-runtime/`. On the first successful self-update, the updater rewrites that portable install into the repo's normal copy-mode layout.
 
 Link mode keeps the installed skills pointed at `dist/skill-bundles/` inside this repository:
 
@@ -53,7 +55,7 @@ Link mode keeps the installed skills pointed at `dist/skill-bundles/` inside thi
 npm run install:skills -- --mode link
 ```
 
-Use this during local iteration. After changing skill text or metadata, rerun:
+Use this during local iteration only. After changing skill text or metadata, rerun:
 
 ```bash
 npm run export:skills
@@ -61,7 +63,7 @@ npm run export:skills
 
 The linked install keeps the same target path, so exported bundle refreshes show up without another copy step.
 
-Link mode intentionally does not auto-update from GitHub.
+Link mode intentionally does not auto-update from GitHub and is not the recommended end-user install path.
 
 ## Common Variants
 
@@ -98,7 +100,7 @@ git pull
 npm run export:skills
 ```
 
-If your installed copy predates the auto-update bootstrap, reinstall once first:
+If your installer-managed copy predates the installed auto-update bootstrap, reinstall once first:
 
 ```bash
 npm run install:skills

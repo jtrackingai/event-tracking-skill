@@ -186,6 +186,18 @@ if (!installedSkillContent.includes('## Installed Auto-Update')) {
   console.error('Check failed: copy-mode installed bundles should inject the Installed Auto-Update bootstrap.');
   process.exit(1);
 }
+const exportedSkillContent = fs.readFileSync(
+  path.join(repoRoot, 'dist', 'skill-bundles', 'tracking-schema', 'SKILL.md'),
+  'utf8',
+);
+if (!exportedSkillContent.includes('## Auto-Update')) {
+  console.error('Check failed: exported bundles should ship the portable Auto-Update bootstrap.');
+  process.exit(1);
+}
+if (exportedSkillContent.includes('## Installed Auto-Update')) {
+  console.error('Check failed: exported bundles should keep the portable bootstrap, not the installed-only bootstrap.');
+  process.exit(1);
+}
 assertResolvesTo(
   path.join(path.relative(repoRoot, tempLinkInstallDir), 'event-tracking-skill'),
   path.join(repoRoot, 'dist', 'skill-bundles', 'event-tracking-skill'),
@@ -197,6 +209,10 @@ const linkedSkillContent = fs.readFileSync(
 );
 if (linkedSkillContent.includes('## Installed Auto-Update')) {
   console.error('Check failed: link-mode installs should not inject the Installed Auto-Update bootstrap.');
+  process.exit(1);
+}
+if (!linkedSkillContent.includes('## Auto-Update')) {
+  console.error('Check failed: link-mode installs should still expose the portable Auto-Update bootstrap from the exported bundle.');
   process.exit(1);
 }
 [

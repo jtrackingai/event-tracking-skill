@@ -59,7 +59,7 @@ For other agent runtimes, point the installer at that runtime's skills directory
 npm run install:skills -- --target-dir /path/to/agent/skills
 ```
 
-For a development-friendly install that stays pointed at local exported bundles:
+For local development only, if you want the installed skills to stay pointed at local exported bundles:
 
 ```bash
 npm run install:skills -- --mode link
@@ -68,8 +68,8 @@ npm run install:skills -- --mode link
 Auto-update behavior:
 
 - `copy` installs are the recommended user path and can self-check for newer GitHub versions
-- `link` installs are for local development and intentionally do not auto-update from GitHub
-- older installed copies need one reinstall through `npm run install:skills` or `./setup --install-skills` before they gain the new auto-update bootstrap
+- `link` installs are for local development only and intentionally do not auto-update from GitHub
+- older installer-managed copies need one reinstall through `npm run install:skills` or `./setup --install-skills` before they gain the installed auto-update bootstrap
 
 Use [docs/README.codex.md](docs/README.codex.md) for Codex-specific defaults, update notes, and troubleshooting.
 Use [docs/README.install.md](docs/README.install.md) for the full shared agent-install guide.
@@ -90,7 +90,9 @@ Use this if you want to install the skill into your local agent skills directory
 npx skills add jtrackingai/event-tracking-skill
 ```
 
-If you specifically want the built-in installer-managed auto-update bootstrap, use the built-in installer flow above instead.
+This portable install can self-check for updates too. On the first successful self-update it rewrites the installed copy into the repo's normal copy-mode layout.
+
+If you want the full umbrella + phase-skill family installed together from the start, use the built-in installer flow above instead.
 
 ### Manual Installation / Local Development
 

@@ -8,6 +8,10 @@ import https from 'node:https';
 
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_FAMILY_NAME = 'event-tracking-skill';
+const DEFAULT_REPOSITORY = 'jtrackingai/event-tracking-skill';
+const DEFAULT_VERSION_URL = 'https://raw.githubusercontent.com/jtrackingai/event-tracking-skill/main/VERSION';
+const DEFAULT_TARBALL_URL = 'https://codeload.github.com/jtrackingai/event-tracking-skill/tar.gz/refs/heads/main';
 
 function readJsonIfExists(filePath) {
   if (!fs.existsSync(filePath)) {
@@ -15,6 +19,14 @@ function readJsonIfExists(filePath) {
   }
 
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function readTextIfExists(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+
+  return fs.readFileSync(filePath, 'utf8');
 }
 
 function ensureDir(targetPath) {
@@ -67,21 +79,59 @@ function getRuntimePaths(bundleDir) {
   return {
     bundleDir,
     skillFile: path.join(bundleDir, 'SKILL.md'),
+    versionFile: path.join(bundleDir, 'VERSION'),
     bundleMetadataFile: path.join(bundleDir, 'bundle.json'),
     installMetadataFile: path.join(bundleDir, '.event-tracking-install.json'),
     updateStateFile: path.join(bundleDir, '.event-tracking-update-state.json'),
   };
 }
 
+function parseFrontmatterValue(markdown, key) {
+  const normalized = markdown.replace(/\r\n/g, '\n');
+  if (!normalized.startsWith('---\n')) {
+    return null;
+  }
+
+  const closingIndex = normalized.indexOf('\n---\n', 4);
+  if (closingIndex === -1) {
+    return null;
+  }
+
+  const frontmatter = normalized.slice(4, closingIndex);
+  for (const line of frontmatter.split('\n')) {
+    if (!line.startsWith(`${key}:`)) {
+      continue;
+    }
+    return line.slice(`${key}:`.length).trim();
+  }
+
+  return null;
+}
+
+function deriveBundleMetadata(paths, bundleDir) {
+  const skillContent = readTextIfExists(paths.skillFile) || '';
+  const version = (readTextIfExists(paths.versionFile) || '').trim() || '0.0.0';
+  const bundleName = parseFrontmatterValue(skillContent, 'name') || path.basename(bundleDir);
+
+  return {
+    name: bundleName,
+    kind: bundleName === DEFAULT_FAMILY_NAME ? 'umbrella' : 'phase',
+    familyName: DEFAULT_FAMILY_NAME,
+    repository: DEFAULT_REPOSITORY,
+    familyVersion: version,
+    updateSource: {
+      provider: 'github-tarball',
+      versionUrl: DEFAULT_VERSION_URL,
+      tarballUrl: DEFAULT_TARBALL_URL,
+    },
+  };
+}
+
 function loadInstallContext(metaUrl) {
   const bundleDir = getBundleDir(metaUrl);
   const paths = getRuntimePaths(bundleDir);
-  const bundleMetadata = readJsonIfExists(paths.bundleMetadataFile);
+  const bundleMetadata = readJsonIfExists(paths.bundleMetadataFile) || deriveBundleMetadata(paths, bundleDir);
   const installMetadata = readJsonIfExists(paths.installMetadataFile);
-
-  if (!bundleMetadata) {
-    throw new Error(`Missing bundle metadata: ${paths.bundleMetadataFile}`);
-  }
 
   return {
     bundleDir,
@@ -97,14 +147,114 @@ function resolveUpdateSource(bundleMetadata, installMetadata) {
     versionUrl: process.env.EVENT_TRACKING_UPDATE_VERSION_URL
       || installMetadata?.updateSource?.versionUrl
       || bundleMetadata.updateSource?.versionUrl
-      || 'https://raw.githubusercontent.com/jtrackingai/event-tracking-skill/main/VERSION',
+      || DEFAULT_VERSION_URL,
     tarballUrl: process.env.EVENT_TRACKING_UPDATE_TARBALL_URL
       || installMetadata?.updateSource?.tarballUrl
       || bundleMetadata.updateSource?.tarballUrl
-      || 'https://codeload.github.com/jtrackingai/event-tracking-skill/tar.gz/refs/heads/main',
+      || DEFAULT_TARBALL_URL,
   };
 
   return source;
+}
+
+function isRepoLocalDevelopmentBundle(bundleDir) {
+  if (fs.existsSync(path.join(bundleDir, '.git'))) {
+    return true;
+  }
+
+  const parentDir = path.basename(path.dirname(bundleDir));
+  const grandparentDir = path.basename(path.dirname(path.dirname(bundleDir)));
+  return parentDir === 'skill-bundles' && grandparentDir === 'dist';
+}
+
+function isLinkedBundle(bundleDir) {
+  try {
+    if (fs.lstatSync(bundleDir).isSymbolicLink()) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  try {
+    return fs.realpathSync(bundleDir) !== bundleDir;
+  } catch {
+    return false;
+  }
+}
+
+function discoverPortableSelectedBundles(targetDir, bundleMetadata) {
+  const selectedBundles = new Set([bundleMetadata.name]);
+  if (!fs.existsSync(targetDir)) {
+    return [...selectedBundles];
+  }
+
+  for (const entry of fs.readdirSync(targetDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const siblingMetadata = readJsonIfExists(path.join(targetDir, entry.name, 'bundle.json'));
+    if (!siblingMetadata) {
+      continue;
+    }
+
+    if ((siblingMetadata.familyName || DEFAULT_FAMILY_NAME) !== (bundleMetadata.familyName || DEFAULT_FAMILY_NAME)) {
+      continue;
+    }
+
+    const siblingRepository = siblingMetadata.repository || DEFAULT_REPOSITORY;
+    const bundleRepository = bundleMetadata.repository || DEFAULT_REPOSITORY;
+    if (siblingRepository !== bundleRepository) {
+      continue;
+    }
+
+    selectedBundles.add(siblingMetadata.name || entry.name);
+  }
+
+  return [...selectedBundles].sort();
+}
+
+function resolveInstallState(context) {
+  const installedVersion = context.installMetadata?.installedVersion || context.bundleMetadata.familyVersion;
+
+  if (context.installMetadata) {
+    const autoUpdateEnabled = !!context.installMetadata.autoUpdateEnabled;
+    return {
+      autoUpdateEnabled,
+      bundleName: context.bundleMetadata.name,
+      installMode: context.installMetadata.installMode || (autoUpdateEnabled ? 'copy' : 'unknown'),
+      installedVersion,
+      reason: autoUpdateEnabled
+        ? null
+        : `Auto-update is disabled for install mode "${context.installMetadata.installMode || 'unknown'}".`,
+      selectedBundles: context.installMetadata.selectedBundles || [context.bundleMetadata.name],
+      targetDir: context.installMetadata.targetDir || path.dirname(context.bundleDir),
+    };
+  }
+
+  if (isLinkedBundle(context.bundleDir) || isRepoLocalDevelopmentBundle(context.bundleDir)) {
+    return {
+      autoUpdateEnabled: false,
+      bundleName: context.bundleMetadata.name,
+      installMode: 'link',
+      installedVersion,
+      reason: 'Auto-update is disabled for linked or repo-local development bundles.',
+      selectedBundles: [context.bundleMetadata.name],
+      targetDir: path.dirname(context.bundleDir),
+    };
+  }
+
+  const targetDir = path.dirname(context.bundleDir);
+  return {
+    autoUpdateEnabled: true,
+    bundleName: context.bundleMetadata.name,
+    installMode: 'portable',
+    installedVersion,
+    reason: null,
+    selectedBundles: discoverPortableSelectedBundles(targetDir, context.bundleMetadata),
+    targetDir,
+  };
 }
 
 function shouldUseCache(state, installedVersion, force, ttlMs) {
@@ -238,7 +388,8 @@ function runCommand(command, args, options = {}) {
 
 async function checkForUpdates(metaUrl, options = {}) {
   const context = loadInstallContext(metaUrl);
-  const installedVersion = context.installMetadata?.installedVersion || context.bundleMetadata.familyVersion;
+  const installState = resolveInstallState(context);
+  const installedVersion = installState.installedVersion;
   const ttlMs = Number.parseInt(
     options.ttlMs
       ?? process.env.EVENT_TRACKING_UPDATE_CACHE_TTL_MS
@@ -247,7 +398,7 @@ async function checkForUpdates(metaUrl, options = {}) {
   );
   const effectiveTtlMs = Number.isFinite(ttlMs) ? ttlMs : DEFAULT_CACHE_TTL_MS;
   const force = !!options.force;
-  const autoUpdateEnabled = !!context.installMetadata?.autoUpdateEnabled;
+  const autoUpdateEnabled = installState.autoUpdateEnabled;
   const source = resolveUpdateSource(context.bundleMetadata, context.installMetadata);
   const previousState = readJsonIfExists(context.paths.updateStateFile);
 
@@ -256,11 +407,12 @@ async function checkForUpdates(metaUrl, options = {}) {
       status: 'disabled',
       autoUpdateEnabled,
       bundleName: context.bundleMetadata.name,
+      installMode: installState.installMode,
       installedVersion,
       checkedAt: new Date().toISOString(),
-      reason: context.installMetadata
-        ? `Auto-update is disabled for install mode "${context.installMetadata.installMode}".`
-        : 'Auto-update metadata is missing for this installed bundle.',
+      reason: installState.reason,
+      selectedBundles: installState.selectedBundles,
+      targetDir: installState.targetDir,
       updateCommand: null,
     };
   }
@@ -277,12 +429,13 @@ async function checkForUpdates(metaUrl, options = {}) {
       status: updateAvailable ? 'update_available' : 'up_to_date',
       autoUpdateEnabled,
       bundleName: context.bundleMetadata.name,
+      installMode: installState.installMode,
       installedVersion,
       latestVersion,
       checkedAt,
-      selectedBundles: context.installMetadata?.selectedBundles || [context.bundleMetadata.name],
+      selectedBundles: installState.selectedBundles,
       updateCommand: `node ${JSON.stringify(path.join(context.bundleDir, 'runtime', 'skill-runtime', 'self-update.mjs'))} --apply`,
-      targetDir: context.installMetadata?.targetDir || path.dirname(context.bundleDir),
+      targetDir: installState.targetDir,
       updateSource: source,
     };
     writeJson(context.paths.updateStateFile, result);
@@ -292,9 +445,12 @@ async function checkForUpdates(metaUrl, options = {}) {
       status: 'error',
       autoUpdateEnabled,
       bundleName: context.bundleMetadata.name,
+      installMode: installState.installMode,
       installedVersion,
       checkedAt: new Date().toISOString(),
       reason: (error instanceof Error ? error.message : String(error)),
+      selectedBundles: installState.selectedBundles,
+      targetDir: installState.targetDir,
       updateCommand: null,
       updateSource: source,
     };
@@ -309,11 +465,14 @@ export {
   compareVersions,
   downloadFile,
   ensureDir,
+  DEFAULT_FAMILY_NAME,
+  DEFAULT_REPOSITORY,
   getBundleDir,
   getCodexHome,
   getRuntimePaths,
   loadInstallContext,
   readJsonIfExists,
+  resolveInstallState,
   requestUrl,
   resolveUpdateSource,
   runCommand,

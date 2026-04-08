@@ -12,7 +12,7 @@ For a development-friendly install that stays pointed at this repository's expor
 ./setup --install-skills --mode link
 ```
 
-Link mode is for local iteration and does not auto-update from GitHub.
+Link mode is for local iteration only and does not auto-update from GitHub.
 
 The installer targets `$CODEX_HOME/skills` when `CODEX_HOME` is set, otherwise `~/.codex/skills`.
 

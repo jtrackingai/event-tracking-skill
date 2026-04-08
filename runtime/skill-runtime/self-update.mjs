@@ -9,6 +9,7 @@ import {
   downloadFile,
   ensureDir,
   loadInstallContext,
+  resolveInstallState,
   runCommand,
 } from './common.mjs';
 
@@ -16,7 +17,7 @@ function printHelp() {
   console.log(`Usage: node self-update.mjs --apply [options]
 
 Download the latest event-tracking skill family source, export skill bundles,
-and reinstall the selected installed bundles into the original skills directory.
+and reinstall the selected event-tracking bundles into the original skills directory.
 
 Options:
   --apply       Perform the update
@@ -81,10 +82,7 @@ async function main() {
   }
 
   const context = loadInstallContext(import.meta.url);
-  const installMetadata = context.installMetadata;
-  if (!installMetadata?.targetDir) {
-    throw new Error('Missing install metadata targetDir for this installed bundle.');
-  }
+  const installState = resolveInstallState(context);
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'event-tracking-skill-update-'));
   const archiveFile = path.join(tempRoot, 'source.tar.gz');
@@ -103,12 +101,12 @@ async function main() {
       'scripts/install-skills.mjs',
       '--skip-export',
       '--target-dir',
-      installMetadata.targetDir,
+      installState.targetDir,
       '--mode',
       'copy',
     ];
 
-    for (const skillName of installMetadata.selectedBundles || [context.bundleMetadata.name]) {
+    for (const skillName of installState.selectedBundles || [context.bundleMetadata.name]) {
       installArgs.push('--skill', skillName);
     }
 

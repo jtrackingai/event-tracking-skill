@@ -4,6 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const SOURCE_SKILL_MANIFEST = 'skills/manifest.json';
+export const SKILL_FAMILY_NAME = 'event-tracking-skill';
+export const SKILL_FAMILY_REPOSITORY = 'jtrackingai/event-tracking-skill';
+
+const AUTO_UPDATE_BOOTSTRAP_START = '<!-- event-tracking auto-update bootstrap:start -->';
+const AUTO_UPDATE_BOOTSTRAP_END = '<!-- event-tracking auto-update bootstrap:end -->';
 
 function assertNonEmptyString(value, label) {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -112,12 +117,69 @@ export function normalizePublicCommand(content) {
     .replaceAll('./event-tracking', 'event-tracking');
 }
 
-export function normalizeSkillContent(bundle, content) {
-  if (bundle.kind === 'umbrella') {
-    return normalizePublicCommand(content);
+function injectAfterFrontmatter(content, insertedContent) {
+  const normalized = content.replace(/\r\n/g, '\n');
+  if (!normalized.startsWith('---\n')) {
+    return `${insertedContent}${normalized}`;
   }
 
-  return normalizePublicCommand(content)
-    .replaceAll('../../references/', 'references/')
-    .replaceAll('../../references/architecture.md', 'references/architecture.md');
+  const closingIndex = normalized.indexOf('\n---\n', 4);
+  if (closingIndex === -1) {
+    return `${insertedContent}${normalized}`;
+  }
+
+  const insertAt = closingIndex + '\n---\n'.length;
+  return `${normalized.slice(0, insertAt)}\n${insertedContent}${normalized.slice(insertAt)}`;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function replaceOrInjectAutoUpdateBootstrap(content, bootstrap) {
+  const normalized = content.replace(/\r\n/g, '\n');
+  const markerPattern = new RegExp(`${escapeRegExp(AUTO_UPDATE_BOOTSTRAP_START)}[\\s\\S]*?${escapeRegExp(AUTO_UPDATE_BOOTSTRAP_END)}\\n?`);
+
+  if (markerPattern.test(normalized)) {
+    return normalized.replace(markerPattern, `${bootstrap}\n`);
+  }
+
+  return injectAfterFrontmatter(normalized, bootstrap);
+}
+
+function buildPortableAutoUpdateBootstrap(bundleName) {
+  return [
+    `${AUTO_UPDATE_BOOTSTRAP_START}`,
+    '## Auto-Update',
+    '',
+    'This installed skill bundle can self-check for newer GitHub versions before you continue.',
+    'It works for built-in copy installs, exported bundle copies, and `npx skills add ...` installs that include this runtime directory.',
+    '',
+    'Before doing any task in this bundle:',
+    '',
+    `1. Resolve the directory that contains this installed \`SKILL.md\`. For Codex installs it is usually \`$CODEX_HOME/skills/${bundleName}\` or \`~/.codex/skills/${bundleName}\`.`,
+    '2. Run `node "<bundle-dir>/runtime/skill-runtime/update-check.mjs" --json`.',
+    '3. If the result status is `update_available`, immediately run `node "<bundle-dir>/runtime/skill-runtime/self-update.mjs" --apply`.',
+    '4. If the update succeeds, read `<bundle-dir>/SKILL.md` again before continuing so you are using the refreshed instructions.',
+    '5. If the result status is `disabled`, treat this bundle as a local development link or repo checkout and continue without updating.',
+    '6. The updater refreshes this bundle and any sibling event-tracking bundles in the same installed skills directory.',
+    '',
+    `${AUTO_UPDATE_BOOTSTRAP_END}`,
+    '',
+  ].join('\n');
+}
+
+export function normalizeSkillContent(bundle, content) {
+  const portableBootstrap = buildPortableAutoUpdateBootstrap(bundle.name);
+
+  if (bundle.kind === 'umbrella') {
+    return replaceOrInjectAutoUpdateBootstrap(normalizePublicCommand(content), portableBootstrap);
+  }
+
+  return replaceOrInjectAutoUpdateBootstrap(
+    normalizePublicCommand(content)
+      .replaceAll('../../references/', 'references/')
+      .replaceAll('../../references/architecture.md', 'references/architecture.md'),
+    portableBootstrap,
+  );
 }

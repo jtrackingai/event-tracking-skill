@@ -42,6 +42,12 @@ function installCopiedBundle(targetDir, skillName = 'tracking-schema') {
   ]);
 }
 
+function installPortableRootSkill(targetDir) {
+  const bundleDir = path.join(targetDir, 'event-tracking-skill');
+  copyRepoWithoutBuildOutputs(bundleDir);
+  return bundleDir;
+}
+
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
@@ -94,6 +100,33 @@ test('copy install injects auto-update bootstrap and metadata', () => {
   assert.match(skillContent, /update-check\.mjs" --json/);
 });
 
+test('portable root installs can check for updates without install metadata', () => {
+  const targetDir = makeTempDir('event-tracking-portable-root-check-');
+  const bundleDir = installPortableRootSkill(targetDir);
+  const versionFile = path.join(makeTempDir('event-tracking-version-source-'), 'VERSION');
+  fs.writeFileSync(versionFile, '9.9.9\n');
+
+  const skillContent = fs.readFileSync(path.join(bundleDir, 'SKILL.md'), 'utf8');
+  assert.match(skillContent, /## Auto-Update/);
+  assert.equal(fs.existsSync(path.join(bundleDir, '.event-tracking-install.json')), false);
+
+  const result = runNode(
+    [path.join(bundleDir, 'runtime', 'skill-runtime', 'update-check.mjs'), '--json', '--force'],
+    {
+      env: {
+        EVENT_TRACKING_UPDATE_VERSION_URL: toFileUrl(versionFile).toString(),
+      },
+    },
+  );
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, 'update_available');
+  assert.equal(payload.installMode, 'portable');
+  assert.equal(payload.latestVersion, '9.9.9');
+  assert.deepEqual(payload.selectedBundles, ['event-tracking-skill']);
+  assert.match(payload.updateCommand, /self-update\.mjs"\s+--apply|self-update\.mjs\s+--apply/);
+});
+
 test('update-check reports update_available when remote VERSION is newer', () => {
   const targetDir = makeTempDir('event-tracking-auto-update-check-');
   installCopiedBundle(targetDir);
@@ -123,7 +156,7 @@ test('self-update reinstalls selected bundles from a newer local tarball source'
 
   const remoteRepoDir = path.join(makeTempDir('event-tracking-remote-repo-'), 'event-tracking-skill');
   copyRepoWithoutBuildOutputs(remoteRepoDir);
-  fs.writeFileSync(path.join(remoteRepoDir, 'VERSION'), '1.0.1\n');
+  fs.writeFileSync(path.join(remoteRepoDir, 'VERSION'), '1.0.3\n');
   fs.writeFileSync(
     path.join(remoteRepoDir, 'skills', 'tracking-schema', 'SKILL.md'),
     fs.readFileSync(path.join(remoteRepoDir, 'skills', 'tracking-schema', 'SKILL.md'), 'utf8')
@@ -147,6 +180,41 @@ test('self-update reinstalls selected bundles from a newer local tarball source'
   const updatedMetadata = readJson(path.join(bundleDir, '.event-tracking-install.json'));
   const updatedSkill = fs.readFileSync(path.join(bundleDir, 'SKILL.md'), 'utf8');
 
-  assert.equal(updatedMetadata.installedVersion, '1.0.1');
+  assert.equal(updatedMetadata.installedVersion, '1.0.3');
   assert.match(updatedSkill, /runtime-self-update-test/);
+});
+
+test('portable root self-update migrates into installer-managed copy layout', () => {
+  const targetDir = makeTempDir('event-tracking-portable-root-update-target-');
+  const bundleDir = installPortableRootSkill(targetDir);
+
+  const remoteRepoDir = path.join(makeTempDir('event-tracking-remote-root-repo-'), 'event-tracking-skill');
+  copyRepoWithoutBuildOutputs(remoteRepoDir);
+  fs.writeFileSync(path.join(remoteRepoDir, 'VERSION'), '1.0.3\n');
+  fs.writeFileSync(
+    path.join(remoteRepoDir, 'SKILL.md'),
+    fs.readFileSync(path.join(remoteRepoDir, 'SKILL.md'), 'utf8')
+      .replace('# Event Tracking Skill', '# Event Tracking Skill\n\nUpdated marker: portable-root-self-update-test'),
+  );
+
+  const tarballFile = path.join(makeTempDir('event-tracking-remote-root-tarball-'), 'event-tracking-skill.tar.gz');
+  createTarball(remoteRepoDir, tarballFile);
+
+  runNode(
+    [path.join(bundleDir, 'runtime', 'skill-runtime', 'self-update.mjs'), '--apply', '--force'],
+    {
+      env: {
+        EVENT_TRACKING_UPDATE_VERSION_URL: toFileUrl(path.join(remoteRepoDir, 'VERSION')).toString(),
+        EVENT_TRACKING_UPDATE_TARBALL_URL: toFileUrl(tarballFile).toString(),
+      },
+    },
+  );
+
+  const updatedMetadata = readJson(path.join(bundleDir, '.event-tracking-install.json'));
+  const updatedSkill = fs.readFileSync(path.join(bundleDir, 'SKILL.md'), 'utf8');
+
+  assert.equal(updatedMetadata.installedVersion, '1.0.3');
+  assert.equal(updatedMetadata.installMode, 'copy');
+  assert.match(updatedSkill, /portable-root-self-update-test/);
+  assert.match(updatedSkill, /## Installed Auto-Update/);
 });
