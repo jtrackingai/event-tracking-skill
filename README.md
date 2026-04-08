@@ -189,6 +189,11 @@ After filling and reviewing `pageGroups` in `./output/example_com/site-analysis.
 ./event-tracking publish --context-file ./output/example_com/gtm-context.json --version-name "GA4 Events v1"
 ```
 
+Execution environment note:
+
+- Run `analyze`, `validate-schema --check-selectors`, `preview`, and `sync` outside sandboxed environments by default.
+- `analyze`, selector checking, and `preview` launch Playwright. `sync` may need a local OAuth callback on `127.0.0.1`.
+
 Important workflow note:
 
 - `prepare-schema` requires `pageGroups` to already be filled in `site-analysis.json` and explicitly confirmed

@@ -17,6 +17,12 @@ Set these expectations with the user before crawling:
 - All URLs must belong to the same domain as the root `<URL>`
 - Maximum 20 URLs per call — split into batches or use full-site mode for more
 
+## Execution Environment
+
+- Run `analyze` outside sandboxed environments by default.
+- Do not first attempt the Playwright crawl inside the sandbox and then retry after interception.
+- Sandboxed browser/network restrictions are a common cause of empty crawls, timeouts, and incomplete page loads.
+
 ## Crawl Outcomes
 
 | Outcome | Guidance |

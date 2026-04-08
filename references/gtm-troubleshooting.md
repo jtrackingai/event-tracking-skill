@@ -7,6 +7,12 @@
 - Do not infer the right choice only from a matching domain, environment name, or the fact that one option "looks production"
 - If a wrong selection was made or the previous sync was interrupted, rerun `sync` and confirm each step again before proceeding
 
+## Execution Environment
+
+- Run Playwright-driven commands outside the sandbox by default: `analyze`, `validate-schema --check-selectors`, and `preview`.
+- Run `sync` outside the sandbox as well.
+- If one of those commands was started in a sandbox and behaves oddly, rerun it outside the sandbox before debugging the site or GTM setup itself.
+
 ## OAuth Failure
 
 - Ensure GTM API is enabled: https://console.cloud.google.com/apis/library/tagmanager.googleapis.com
@@ -23,6 +29,7 @@
 
 ## No Events Fire in Preview
 
+- Confirm `preview` was run outside the sandbox before investigating selectors or GTM config.
 - The `preview` command automatically detects whether the target site has GTM installed.
 - If the container is not found, it will prompt to either re-sync to the correct container or inject GTM during preview.
 - If zero events fire even with injection, verify that the GTM public ID in `gtm-context.json` is correct.
