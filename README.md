@@ -93,21 +93,6 @@ Auto-update behavior:
 Use [docs/README.codex.md](docs/README.codex.md) for Codex-specific defaults, update notes, and troubleshooting.
 Use [docs/README.install.md](docs/README.install.md) for the full shared agent-install guide.
 
-### Repo-Local CLI Setup
-
-```bash
-./setup
-```
-
-That installs dependencies, builds the CLI, and runs a basic environment check.
-Use this only when you also want the repo-local CLI or local development environment. It is not required for `npm run install:skills`.
-
-If you are also preparing the repo for local iteration on the skill family itself, you can combine setup and install:
-
-```bash
-./setup --install-skills --with-phases
-```
-
 ### Install with skills.sh (Alternative)
 
 Use this if you want to install the skill into your local agent skills directory without cloning the repository first.
@@ -120,28 +105,7 @@ This portable install can self-check for updates too. On the first successful se
 
 If you want the full umbrella + phase-skill family installed together from the start, use `npm run install:skills -- --with-phases`.
 
-### Manual Installation / Local Development
-
-Use this if you want to inspect the source, run the CLI directly, or work on the skill locally.
-
-```bash
-git clone https://github.com/jtrackingai/event-tracking-skill.git
-cd event-tracking-skill
-npm ci
-npm run build
-```
-
-`npm ci` also installs Playwright's Chromium browser, which is required by the crawl and preview steps.
-
-After setup, use the checked-in wrapper from the repo root:
-
-```bash
-./event-tracking --help
-```
-
-If the package is installed or linked as a binary, the public command name is `event-tracking`.
-
-`dist/cli.js` is an internal implementation path, not the documented command surface.
+If you want the repo-local CLI, contributor setup, or local development workflow, use [DEVELOPING.md](DEVELOPING.md) instead of treating README as a maintainer guide.
 
 ## Documentation Map
 

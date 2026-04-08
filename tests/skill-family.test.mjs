@@ -137,4 +137,7 @@ test('Codex install docs cover the default minimal install and optional phase in
   assert.match(readme, /\[docs\/README\.codex\.md\]\(docs\/README\.codex\.md\)/, 'README should link to the Codex guide.');
   assert.match(readme, /Most users only need the umbrella skill\./, 'README should keep the default install path minimal and explicit.');
   assert.match(readme, /do not want to clone the repository/, 'README should distinguish the no-clone path from the repo-based installer path.');
+  assert.match(readme, /\[DEVELOPING\.md\]\(DEVELOPING\.md\)/, 'README should route repo-local CLI and maintainer setup to DEVELOPING.md.');
+  assert.doesNotMatch(readme, /### Repo-Local CLI Setup/, 'README should not mix the maintainer setup section into the main install flow.');
+  assert.doesNotMatch(readme, /### Manual Installation \/ Local Development/, 'README should not duplicate local-development instructions in the main install flow.');
 });
