@@ -20,6 +20,12 @@ Run preview:
 ./event-tracking preview <artifact-dir>/event-schema.json --context-file <artifact-dir>/gtm-context.json
 ```
 
+If comparing against an older preview run, pass the previous health baseline:
+
+```bash
+./event-tracking preview <artifact-dir>/event-schema.json --context-file <artifact-dir>/gtm-context.json --baseline <previous-tracking-health.json>
+```
+
 Run `preview` outside sandboxed environments by default. Do not first attempt the Playwright browser step inside the sandbox and then retry after it is intercepted.
 
 Then interpret:
@@ -27,6 +33,7 @@ Then interpret:
 - blockers
 - expected failures
 - selector mismatches
+- unexpected fired events outside the approved schema
 - release readiness
 
 If the user explicitly wants to publish after verification:
@@ -35,12 +42,16 @@ If the user explicitly wants to publish after verification:
 ./event-tracking publish --context-file <artifact-dir>/gtm-context.json --version-name "GA4 Events v1 - <date>"
 ```
 
+If `tracking-health.json` is missing, still manual-only, or has blockers, `publish` now stops by default. Only use `--force` when the user explicitly wants to override that gate.
+
 ## Required Output
 
 Produce and share:
 
 - `<artifact-dir>/preview-report.md`
 - `<artifact-dir>/preview-result.json`
+- `<artifact-dir>/tracking-health.json`
+- `<artifact-dir>/tracking-health-history/`
 - updated `<artifact-dir>/workflow-state.json`
 
 ## Stop Boundary

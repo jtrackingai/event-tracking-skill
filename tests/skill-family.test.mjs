@@ -113,7 +113,7 @@ test('Shopify phase skill owns the Shopify-specific branch contract', () => {
   assert.match(shopifySkill, /Do not force the generic preview path on a Shopify run\./, 'Shopify skill should keep the Shopify verification boundary explicit.');
 });
 
-test('Codex install docs cover both copy and link workflows', () => {
+test('Codex install docs cover the default minimal install and optional phase installs', () => {
   const genericGuide = readText('docs/README.install.md');
   const codexGuide = readText('docs/README.codex.md');
   const bootstrapNote = readText('.codex/INSTALL.md');
@@ -121,13 +121,17 @@ test('Codex install docs cover both copy and link workflows', () => {
 
   assert.match(genericGuide, /Agent Install Guide/, 'A shared agent install guide should exist.');
   assert.match(genericGuide, /--target-dir \/path\/to\/agent\/skills/, 'The shared guide should explain portable target-dir installs.');
+  assert.match(genericGuide, /--with-phases/, 'The shared guide should show how to install the full phase family explicitly.');
   assert.match(genericGuide, /auto-update/i, 'The shared guide should explain auto-update behavior.');
   assert.match(codexGuide, /--mode link/, 'Codex guide should document link mode.');
+  assert.match(codexGuide, /--with-phases/, 'Codex guide should show how to install the full phase family explicitly.');
   assert.match(codexGuide, /README\.install\.md/, 'Codex guide should point back to the shared install guide.');
   assert.match(codexGuide, /auto-update/i, 'Codex guide should mention installed auto-update behavior.');
-  assert.match(bootstrapNote, /\.\/setup --install-skills/, '.codex bootstrap note should expose the setup entry point.');
+  assert.match(bootstrapNote, /npm run install:skills/, '.codex bootstrap note should expose the minimal install entry point.');
+  assert.match(bootstrapNote, /--with-phases/, '.codex bootstrap note should mention the full phase-family install option.');
   assert.match(bootstrapNote, /README\.install\.md/, '.codex bootstrap note should point to the shared install guide.');
   assert.match(bootstrapNote, /auto-update/i, '.codex bootstrap note should mention auto-update for copy installs.');
   assert.match(readme, /\[docs\/README\.install\.md\]\(docs\/README\.install\.md\)/, 'README should link to the shared install guide.');
   assert.match(readme, /\[docs\/README\.codex\.md\]\(docs\/README\.codex\.md\)/, 'README should link to the Codex guide.');
+  assert.match(readme, /Most users only need the umbrella skill\./, 'README should keep the default install path minimal and explicit.');
 });

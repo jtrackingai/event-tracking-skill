@@ -77,11 +77,11 @@ interface InferredStorefrontCandidate {
 function recommendationLabel(recommendation: ShopifyBootstrapRecommendation): string {
   switch (recommendation) {
     case 'keep':
-      return '建议保留';
+      return 'Keep';
     case 'review':
-      return '建议人工确认';
+      return 'Review';
     case 'remove':
-      return '建议删除';
+      return 'Remove';
   }
 }
 
@@ -556,9 +556,9 @@ function renderBootstrapReviewMarkdown(siteUrl: string, reviewItems: ShopifyBoot
     '',
     '## Review Checklist',
     '',
-    `- [ ] 建议保留 (${keepItems.length}): ${keepItems.map(item => `\`${item.eventName}\``).join(', ') || '无'}`,
-    `- [ ] 建议人工确认 (${reviewOnlyItems.length}): ${reviewOnlyItems.map(item => `\`${item.eventName}\``).join(', ') || '无'}`,
-    `- [ ] 建议删除 (${removeItems.length}): ${removeItems.map(item => `\`${item.eventName}\``).join(', ') || '无'}`,
+    `- [ ] Keep (${keepItems.length}): ${keepItems.map(item => `\`${item.eventName}\``).join(', ') || 'none'}`,
+    `- [ ] Review (${reviewOnlyItems.length}): ${reviewOnlyItems.map(item => `\`${item.eventName}\``).join(', ') || 'none'}`,
+    `- [ ] Remove (${removeItems.length}): ${removeItems.map(item => `\`${item.eventName}\``).join(', ') || 'none'}`,
     '',
     '## Baseline Ecommerce Events',
     '',
@@ -592,7 +592,7 @@ function renderBootstrapReviewMarkdown(siteUrl: string, reviewItems: ShopifyBoot
   lines.push('');
   lines.push('- Baseline ecommerce events come from Shopify standard events and are expected in most Shopify storefronts.');
   lines.push('- Inferred storefront events are based on actual analyzed selectors and should still be reviewed with `validate-schema --check-selectors`.');
-  lines.push('- `建议删除` usually means the inferred selector is too generic and should not be trusted without manual adjustment.');
+  lines.push('- `Remove` usually means the inferred selector is too generic and should not be trusted without manual adjustment.');
 
   return lines.join('\n');
 }

@@ -9,10 +9,16 @@ The generic installer flow now lives in [README.install.md](README.install.md). 
 From the repository root:
 
 ```bash
-./setup --install-skills
+npm run install:skills
 ```
 
-That installs dependencies, builds the CLI, runs the basic environment checks, exports the skill bundles, and copies them into the default skills directory.
+That installs only `event-tracking-skill` into the default Codex skills directory so the first install stays minimal.
+
+If you want the full phase-oriented family installed together:
+
+```bash
+npm run install:skills -- --with-phases
+```
 
 Default target resolution:
 
@@ -49,6 +55,12 @@ The linked install keeps the same target path, so exported bundle refreshes show
 
 Link mode intentionally does not auto-update from GitHub and is not the recommended end-user install path.
 
+To link the full family during local iteration:
+
+```bash
+npm run install:skills -- --mode link --with-phases
+```
+
 ## Common Variants
 
 Install into a custom skills directory:
@@ -63,10 +75,16 @@ Install only selected skills:
 npm run install:skills -- --skill event-tracking-skill --skill tracking-schema
 ```
 
+Install the full skill family:
+
+```bash
+npm run install:skills -- --with-phases
+```
+
 Run the full setup and install linked bundles:
 
 ```bash
-./setup --install-skills --mode link
+./setup --install-skills --mode link --with-phases
 ```
 
 ## Updating
@@ -96,9 +114,12 @@ After that one-time reinstall, normal copy-mode usage can self-check for updates
 
 ## Verify Discovery
 
-Check that the installed directory contains the expected skill folders, for example:
+Default installs should contain:
 
 - `event-tracking-skill`
+
+If you used `--with-phases`, the installed directory should also contain:
+
 - `tracking-discover`
 - `tracking-group`
 - `tracking-live-gtm`

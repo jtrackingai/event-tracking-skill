@@ -1,6 +1,6 @@
 # Agent Install Guide
 
-Use this guide when you want to install the exported skill family into a local agent skills directory.
+Use this guide when you want to install the exported skill bundles into a local agent skills directory.
 
 This is the shared installation path across agent runtimes. Platform-specific notes such as Codex defaults should live in thin supplement pages on top of this guide.
 
@@ -9,18 +9,24 @@ This is the shared installation path across agent runtimes. Platform-specific no
 From the repository root:
 
 ```bash
-./setup --install-skills
-```
-
-That installs dependencies, builds the CLI, runs the basic environment checks, exports the skill bundles, and copies them into the default install target.
-
-Direct installer path:
-
-```bash
 npm run install:skills
 ```
 
-Use this when you already have the repo checked out and only want to refresh the installed skill bundles.
+That keeps the default install surface minimal by installing only the umbrella skill into the default install target.
+
+If you want the full phase-oriented family installed together:
+
+```bash
+npm run install:skills -- --with-phases
+```
+
+Use that when your agent runtime benefits from loading the phase skills separately.
+
+If you also want the repo-local CLI and development checks prepared in one pass:
+
+```bash
+./setup --install-skills --with-phases
+```
 
 ## Default Install Target
 
@@ -33,6 +39,12 @@ If your agent runtime uses a different skills directory, install directly into i
 
 ```bash
 npm run install:skills -- --target-dir /path/to/agent/skills
+```
+
+To install the full family into a custom directory:
+
+```bash
+npm run install:skills -- --target-dir /path/to/agent/skills --with-phases
 ```
 
 ## Copy vs Link Mode
@@ -65,6 +77,12 @@ The linked install keeps the same target path, so exported bundle refreshes show
 
 Link mode intentionally does not auto-update from GitHub and is not the recommended end-user install path.
 
+To link the full phase-oriented family during local iteration:
+
+```bash
+npm run install:skills -- --mode link --with-phases
+```
+
 ## Common Variants
 
 Install into a custom skills directory:
@@ -79,10 +97,16 @@ Install only selected skills:
 npm run install:skills -- --skill event-tracking-skill --skill tracking-schema
 ```
 
+Install the full skill family explicitly:
+
+```bash
+npm run install:skills -- --with-phases
+```
+
 Run the full setup and install linked bundles:
 
 ```bash
-./setup --install-skills --mode link
+./setup --install-skills --mode link --with-phases
 ```
 
 Inspect the generated install plan without changing anything:
@@ -118,9 +142,12 @@ After that one-time reinstall, normal copy-mode usage can self-check for updates
 
 ## Verification
 
-Check that the installed directory contains the expected skill folders, for example:
+Default installs should contain:
 
 - `event-tracking-skill`
+
+If you used `--with-phases`, the installed directory should also contain:
+
 - `tracking-discover`
 - `tracking-group`
 - `tracking-live-gtm`

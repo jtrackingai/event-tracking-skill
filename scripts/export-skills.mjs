@@ -84,7 +84,7 @@ function exportBundle(bundle) {
   };
 }
 
-fs.rmSync(bundleRoot, { recursive: true, force: true });
+fs.rmSync(bundleRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 ensureDir(bundleRoot);
 
 const sourceManifest = loadSourceSkillManifest(repoRoot);

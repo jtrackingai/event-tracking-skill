@@ -19,9 +19,20 @@ function printHelp() {
 
 Install exported event-tracking skill bundles into an agent skills directory.
 
+Fast paths:
+  npm run install:skills
+      Install only the umbrella skill into the default target.
+  npm run install:skills -- --with-phases
+      Install the full skill family (umbrella + phase skills).
+  ./setup
+      Prepare the repo-local CLI and development environment.
+  ./setup --install-skills --with-phases
+      Run the full repo setup and install the full skill family.
+
 Options:
   --target-dir <path>   Install into this directory instead of \$CODEX_HOME/skills or ~/.codex/skills
   --skill <name>        Install only the named skill bundle (repeatable)
+  --with-phases         Install the full skill family when --skill is not provided
   --mode <copy|link>    Copy bundles into the target directory or link them in place
                         copy installs get installed auto-update metadata; link installs are local-development-only and disable auto-update
   --skip-export         Reuse the current dist/skill-bundles output instead of regenerating it first
@@ -37,6 +48,7 @@ function parseArgs(argv) {
     skills: [],
     skipExport: false,
     targetDir: null,
+    withPhases: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -62,6 +74,11 @@ function parseArgs(argv) {
     if (arg === '--mode') {
       index += 1;
       options.mode = argv[index] ?? '';
+      continue;
+    }
+
+    if (arg === '--with-phases') {
+      options.withPhases = true;
       continue;
     }
 
@@ -135,9 +152,13 @@ function loadManifest() {
   return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 }
 
-function selectBundles(manifest, requestedSkills) {
+function getDefaultBundle(manifest) {
+  return manifest.bundles.find(bundle => bundle.kind === 'umbrella') ?? manifest.bundles[0];
+}
+
+function selectBundles(manifest, requestedSkills, withPhases) {
   if (requestedSkills.length === 0) {
-    return manifest.bundles;
+    return withPhases ? manifest.bundles : [getDefaultBundle(manifest)];
   }
 
   const bundleMap = new Map(manifest.bundles.map(bundle => [bundle.name, bundle]));
@@ -259,11 +280,11 @@ function writeInstallMetadata(targetRoot, bundle, selectedBundles, autoUpdateEna
 }
 
 function installBundle(targetRoot, bundle, mode, dryRun, selectedBundles) {
-  const sourcePath = path.join(repoRoot, bundle.outputPath);
+  const sourcePath = path.join(repoRoot, 'dist', 'skill-bundles', bundle.name);
   const targetPath = path.join(targetRoot, bundle.name);
 
   if (!fs.existsSync(sourcePath)) {
-    console.error(`Missing exported bundle directory: ${bundle.outputPath}`);
+    console.error(`Missing exported bundle directory: dist/skill-bundles/${bundle.name}`);
     process.exit(1);
   }
 
@@ -286,15 +307,47 @@ function installBundle(targetRoot, bundle, mode, dryRun, selectedBundles) {
   writeInstallMetadata(targetRoot, bundle, selectedBundles, true);
 }
 
+function describeBundleSelection(bundles, options) {
+  const selectedNames = bundles.map(bundle => bundle.name);
+  console.log(`Selected bundles: ${selectedNames.join(', ')}`);
+
+  if (options.skills.length > 0) {
+    console.log('Bundle selection mode: explicit --skill filter');
+    return;
+  }
+
+  if (options.withPhases) {
+    console.log('Bundle selection mode: full skill family');
+    return;
+  }
+
+  console.log('Bundle selection mode: minimal default (umbrella skill only)');
+  console.log('Use --with-phases if you want the full phase-oriented skill family installed together.');
+}
+
+function printCompletionNotes(options) {
+  if (options.dryRun) {
+    return;
+  }
+
+  if (options.mode === 'link') {
+    console.log('Next step: rerun `npm run export:skills` after editing skill text or metadata.');
+    return;
+  }
+
+  console.log('Next step: restart the agent session if newly installed skills do not appear immediately.');
+}
+
 const options = parseArgs(process.argv.slice(2));
 runExportIfNeeded(options.skipExport);
 
 const manifest = loadManifest();
-const bundles = selectBundles(manifest, options.skills);
+const bundles = selectBundles(manifest, options.skills, options.withPhases);
 const targetDir = resolveTargetDir(options.targetDir);
 
 console.log(`Target skills directory: ${targetDir}`);
 console.log(`Install mode: ${options.mode}`);
+describeBundleSelection(bundles, options);
 
 bundles.forEach(bundle => installBundle(
   targetDir,
@@ -309,3 +362,5 @@ if (options.dryRun) {
 } else {
   console.log(`${options.mode === 'link' ? 'Linked' : 'Installed'} ${bundles.length} skill bundle(s) into ${targetDir}`);
 }
+
+printCompletionNotes(options);

@@ -10,6 +10,13 @@ import {
   hasConfirmedPageGroups,
 } from '../crawler/page-analyzer';
 import { LiveGtmAnalysis } from '../gtm/live-parser';
+import {
+  TRACKING_HEALTH_HISTORY_DIR,
+  TrackingHealthGrade,
+  TrackingHealthMode,
+  hasBlockingTrackingHealth,
+  readTrackingHealthReport,
+} from '../reporter/tracking-health';
 
 export const WORKFLOW_STATE_FILE = 'workflow-state.json';
 
@@ -40,6 +47,13 @@ export interface VerificationState {
   verifiedAt?: string;
   reportFile?: string;
   resultFile?: string;
+  healthFile?: string;
+  healthMode?: TrackingHealthMode;
+  healthGrade?: TrackingHealthGrade;
+  healthScore?: number | null;
+  healthBlockers?: string[];
+  unexpectedEventCount?: number;
+  totalSchemaEvents?: number;
   totalExpected?: number;
   totalFired?: number;
 }
@@ -58,11 +72,15 @@ export interface WorkflowArtifacts {
   schemaContext: boolean;
   eventSchema: boolean;
   eventSpec: boolean;
+  schemaDecisionAudit: boolean;
+  schemaRestore: boolean;
   gtmConfig: boolean;
   gtmContext: boolean;
   credentials: boolean;
   previewReport: boolean;
   previewResult: boolean;
+  trackingHealth: boolean;
+  trackingHealthHistory: boolean;
   shopifySchemaTemplate: boolean;
   shopifyBootstrapReview: boolean;
   shopifyCustomPixel: boolean;
@@ -100,11 +118,15 @@ interface WorkflowFiles {
   schemaContext: string;
   eventSchema: string;
   eventSpec: string;
+  schemaDecisionAudit: string;
+  schemaRestore: string;
   gtmConfig: string;
   gtmContext: string;
   credentials: string;
   previewReport: string;
   previewResult: string;
+  trackingHealth: string;
+  trackingHealthHistory: string;
   shopifySchemaTemplate: string;
   shopifyBootstrapReview: string;
   shopifyCustomPixel: string;
@@ -147,11 +169,15 @@ function getWorkflowFiles(artifactDir: string): WorkflowFiles {
     schemaContext: path.join(artifactDir, 'schema-context.json'),
     eventSchema: path.join(artifactDir, 'event-schema.json'),
     eventSpec: path.join(artifactDir, 'event-spec.md'),
+    schemaDecisionAudit: path.join(artifactDir, 'schema-decisions.jsonl'),
+    schemaRestore: path.join(artifactDir, 'schema-restore'),
     gtmConfig: path.join(artifactDir, 'gtm-config.json'),
     gtmContext: path.join(artifactDir, 'gtm-context.json'),
     credentials: path.join(artifactDir, 'credentials.json'),
     previewReport: path.join(artifactDir, 'preview-report.md'),
     previewResult: path.join(artifactDir, 'preview-result.json'),
+    trackingHealth: path.join(artifactDir, 'tracking-health.json'),
+    trackingHealthHistory: path.join(artifactDir, TRACKING_HEALTH_HISTORY_DIR),
     shopifySchemaTemplate: path.join(artifactDir, 'shopify-schema-template.json'),
     shopifyBootstrapReview: path.join(artifactDir, 'shopify-bootstrap-review.md'),
     shopifyCustomPixel: path.join(artifactDir, 'shopify-custom-pixel.js'),
@@ -280,6 +306,7 @@ function getNextAction(args: {
   gtmConfigExists: boolean;
   gtmContextExists: boolean;
   previewComplete: boolean;
+  verification: VerificationState;
   publishComplete: boolean;
 }): { nextAction: string; nextCommand?: string } {
   const {
@@ -295,6 +322,7 @@ function getNextAction(args: {
     gtmConfigExists,
     gtmContextExists,
     previewComplete,
+    verification,
     publishComplete,
   } = args;
 
@@ -311,6 +339,20 @@ function getNextAction(args: {
         nextCommand: formatPublicCommand(['preview', files.eventSchema, '--context-file', files.gtmContext]),
       };
     }
+
+    if (verification.healthMode === 'manual_shopify_verification' || verification.healthGrade === 'manual_required') {
+      return {
+        nextAction: 'Complete the manual Shopify verification checklist before publishing.',
+      };
+    }
+
+    if ((verification.healthBlockers || []).length > 0 || verification.healthGrade === 'critical') {
+      return {
+        nextAction: 'Resolve tracking-health blockers, re-sync if needed, then re-run preview before publishing.',
+        nextCommand: formatPublicCommand(['preview', files.eventSchema, '--context-file', files.gtmContext]),
+      };
+    }
+
     return {
       nextAction: 'Publish the verified GTM workspace when ready.',
       nextCommand: formatPublicCommand(['publish', '--context-file', files.gtmContext, '--version-name', 'GA4 Events v1']),
@@ -399,6 +441,7 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
   const liveAnalysis = tryReadJsonFile<LiveGtmAnalysis>(files.liveGtmAnalysis, warnings, 'live-gtm-analysis.json');
   const schema = tryReadJsonFile<unknown>(files.eventSchema, warnings, 'event-schema.json');
   const previewResult = tryReadJsonFile<Record<string, unknown>>(files.previewResult, warnings, 'preview-result.json');
+  const trackingHealth = readTrackingHealthReport(files.trackingHealth);
 
   const pageGroupsReview = analysis ? getPageGroupsReviewState(analysis) : defaultPageGroupsReview();
   const hasGroupedPages = !!analysis && analysis.pageGroups.length > 0;
@@ -432,9 +475,16 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
       status: 'completed',
       reportFile: files.previewReport,
       resultFile: files.previewResult,
+      healthFile: trackingHealth ? files.trackingHealth : verification.healthFile,
       verifiedAt: verification.verifiedAt
         || (typeof previewResult?.previewEndedAt === 'string' ? previewResult.previewEndedAt : undefined)
         || (typeof previewResult?.generatedAt === 'string' ? previewResult.generatedAt : undefined),
+      healthMode: trackingHealth?.mode || verification.healthMode,
+      healthGrade: trackingHealth?.grade || verification.healthGrade,
+      healthScore: trackingHealth ? trackingHealth.score : verification.healthScore,
+      healthBlockers: trackingHealth?.blockers || verification.healthBlockers,
+      unexpectedEventCount: trackingHealth?.unexpectedFiredCount ?? verification.unexpectedEventCount,
+      totalSchemaEvents: trackingHealth?.totalSchemaEvents ?? verification.totalSchemaEvents,
       totalExpected: typeof previewResult?.totalExpected === 'number' ? previewResult.totalExpected : verification.totalExpected,
       totalFired: typeof previewResult?.totalFired === 'number' ? previewResult.totalFired : verification.totalFired,
     };
@@ -451,11 +501,15 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
     schemaContext: fileExists(files.schemaContext),
     eventSchema: fileExists(files.eventSchema),
     eventSpec: fileExists(files.eventSpec),
+    schemaDecisionAudit: fileExists(files.schemaDecisionAudit),
+    schemaRestore: fileExists(files.schemaRestore),
     gtmConfig: fileExists(files.gtmConfig),
     gtmContext: fileExists(files.gtmContext),
     credentials: fileExists(files.credentials),
     previewReport: fileExists(files.previewReport),
     previewResult: fileExists(files.previewResult),
+    trackingHealth: fileExists(files.trackingHealth),
+    trackingHealthHistory: fileExists(files.trackingHealthHistory),
     shopifySchemaTemplate: fileExists(files.shopifySchemaTemplate),
     shopifyBootstrapReview: fileExists(files.shopifyBootstrapReview),
     shopifyCustomPixel: fileExists(files.shopifyCustomPixel),
@@ -498,6 +552,15 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
   if (artifacts.gtmContext && !completed.includes('gtm_generated')) {
     warnings.push('gtm-context.json exists without a valid current GTM config checkpoint. Re-run generate-gtm and sync before trusting downstream verification or publish state.');
   }
+  if (verification.status === 'completed' && artifacts.previewResult && !artifacts.trackingHealth) {
+    warnings.push('preview-result.json exists, but tracking-health.json is missing. Run preview again so publish readiness can be evaluated from a current health report.');
+  }
+  if (trackingHealth && hasBlockingTrackingHealth(trackingHealth)) {
+    warnings.push(`tracking-health.json currently blocks publish: ${trackingHealth.blockers.join(' ')}`);
+  }
+  if (trackingHealth?.grade === 'warning' && !hasBlockingTrackingHealth(trackingHealth)) {
+    warnings.push('tracking-health.json is in warning state. Review preview-report.md before publishing.');
+  }
 
   const next = getNextAction({
     files,
@@ -512,6 +575,7 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
     gtmConfigExists: artifacts.gtmConfig,
     gtmContextExists: artifacts.gtmContext,
     previewComplete: verification.status === 'completed',
+    verification,
     publishComplete: publish.status === 'completed',
   });
 

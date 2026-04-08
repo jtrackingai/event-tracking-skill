@@ -12,9 +12,9 @@ This repository now has an umbrella skill plus a small phase-oriented skill fami
 | `tracking-discover` | analysis bootstrap | the user wants crawl coverage, platform detection, dataLayer discovery, or a fresh artifact directory | `site-analysis.json` |
 | `tracking-group` | page grouping review | the user wants page-group authoring, grouping adjustments, or page-group approval only | confirmed `site-analysis.json` |
 | `tracking-live-gtm` | live GTM baseline audit | the user wants to inspect the real public GTM runtime before schema generation or compare multiple live GTM containers | `live-gtm-analysis.json` and `live-gtm-review.md` |
-| `tracking-schema` | schema authoring and approval | the user wants event design, selector validation, schema review, or spec generation | confirmed `event-schema.json` and optional `event-spec.md` |
+| `tracking-schema` | schema authoring and approval | the user wants event design, selector validation, schema review, or spec generation | confirmed `event-schema.json`, optional `event-spec.md`, and schema audit/restore artifacts |
 | `tracking-sync` | GTM config generation and sync | the user wants GTM-ready config, workspace sync, or container selection | `gtm-config.json` or `gtm-context.json` |
-| `tracking-verify` | preview QA and go-live handoff | the user wants preview verification, QA interpretation, or a publish-ready checkpoint | `preview-report.md` or publish outcome |
+| `tracking-verify` | preview QA and go-live handoff | the user wants preview verification, QA interpretation, or a publish-ready checkpoint | `preview-report.md`, `tracking-health.json`, or publish outcome |
 | `tracking-shopify` | Shopify-specific overlay | the platform is Shopify or the user explicitly wants the Shopify branch behavior | Shopify bootstrap review, custom pixel, install guide, or manual verification plan |
 
 ## Design Rules
@@ -95,4 +95,4 @@ To install those bundles into a real agent skills directory, run:
 npm run install:skills
 ```
 
-That copies the generated bundles into the installer's default target, unless `--target-dir` is provided. See [README.install.md](README.install.md) for the shared install flow and [README.codex.md](README.codex.md) for Codex-specific defaults.
+That installs the umbrella skill into the installer's default target, unless `--target-dir` is provided. Add `--with-phases` when you want the full phase-oriented family installed together. See [README.install.md](README.install.md) for the shared install flow and [README.codex.md](README.codex.md) for Codex-specific defaults.

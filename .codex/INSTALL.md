@@ -1,15 +1,21 @@
-Install this skill family into Codex from the repository root with:
+Install the default umbrella skill into Codex from the repository root with:
 
 ```bash
-./setup --install-skills
+npm run install:skills
 ```
 
 This copy-mode install is also the path that enables installed auto-update checks.
 
+If you want the full phase-oriented skill family installed together, use:
+
+```bash
+npm run install:skills -- --with-phases
+```
+
 For a development-friendly install that stays pointed at this repository's exported bundles, use:
 
 ```bash
-./setup --install-skills --mode link
+npm run install:skills -- --mode link
 ```
 
 Link mode is for local iteration only and does not auto-update from GitHub.

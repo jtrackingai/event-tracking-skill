@@ -11,6 +11,7 @@ If you are working in the source repository, the repo-facing overview still live
 | Skill layer | Umbrella workflow routing and phase-specific skill entry points | [../SKILL.md](../SKILL.md), [skill-map.md](skill-map.md), separately installed phase skills |
 | CLI layer | Deterministic commands for crawl, validation, GTM sync, preview, and publish | `event-tracking ...` |
 | Artifact layer | Durable handoff files between steps | artifact directory under `<output-root>/<url-slug>` |
+| Run index layer | Recent run discovery for resume workflows plus per-artifact output-root recovery | `.event-tracking-runs.jsonl` under the output root and `.event-tracking-run.json` inside each artifact directory |
 | Reference layer | Domain rules for crawl, grouping, schema, preview, and Shopify behavior | `references/*.md` |
 
 ## Public Surface
@@ -34,17 +35,18 @@ All workflow state lives inside one artifact directory for one site run.
 | `group_approved` | grouped `site-analysis.json` | `pageGroupsReview.confirmedHash` in `site-analysis.json` | CLI-enforced |
 | `live_gtm_analyzed` | approved `site-analysis.json` when live GTM IDs are detected | `live-gtm-analysis.json`, `live-gtm-review.md` | CLI-enforced when live GTM is present |
 | `schema_prepared` | approved `site-analysis.json` | `schema-context.json`, Shopify bootstrap artifacts when applicable | CLI-enforced |
-| `schema_approved` | `event-schema.json` | approved schema hash in `workflow-state.json` and optional `event-spec.md` | CLI-enforced |
+| `schema_approved` | `event-schema.json` | approved schema hash in `workflow-state.json`, schema restore snapshot, schema decision audit, and optional `event-spec.md` | CLI-enforced |
 | `gtm_generated` | approved `event-schema.json` | `gtm-config.json` | CLI-enforced |
 | `synced` | `gtm-config.json` | `gtm-context.json`, `credentials.json`, Shopify sync artifacts when applicable | CLI-enforced |
-| `verified` | `event-schema.json`, `gtm-context.json` | `preview-report.md`, `preview-result.json` | CLI-enforced for command execution; release decision remains human |
-| `published` | `gtm-context.json` | live GTM container version | human confirmation plus CLI execution |
+| `verified` | `event-schema.json`, `gtm-context.json` | `preview-report.md`, `preview-result.json`, `tracking-health.json`, `tracking-health-history/` | CLI-enforced for command execution; release readiness is derived from tracking health |
+| `published` | `gtm-context.json`, non-blocking `tracking-health.json` unless forced | live GTM container version | human confirmation plus CLI execution |
 
 Gate notes:
 
 - `prepare-schema` enforces `group_approved`
 - `prepare-schema` also enforces `live_gtm_analyzed` when `site-analysis.json` detected real GTM container IDs
 - `generate-gtm` enforces `schema_approved` unless the user explicitly forces it
+- `preview` writes tracking health plus timestamped history, and `publish` consumes that health as its release gate unless the user explicitly forces it
 - `preview` and `publish` both write back into `workflow-state.json`
 
 ## Branching Model
@@ -83,6 +85,8 @@ Resume rules:
 
 Use `event-tracking status <artifact-dir-or-file>` when the next step is unclear.
 
+Use `event-tracking runs <output-root>` when the artifact directory is unknown but the output root is known.
+
 ## Workflow State
 
 `workflow-state.json` records:
@@ -93,7 +97,9 @@ Use `event-tracking status <artifact-dir-or-file>` when the next step is unclear
 - live GTM baseline readiness
 - schema review state
 - verification status
+- verification health grade, score, blockers, and unexpected-event count
 - publish status
+- artifact presence for schema audit, restore, run context, and tracking health outputs
 - next recommended action and command
 
 Treat it as the machine-readable checkpoint layer on top of the artifact files themselves.
