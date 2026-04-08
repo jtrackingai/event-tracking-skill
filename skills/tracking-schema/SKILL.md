@@ -26,6 +26,8 @@ If the site has a live GTM container installed, make sure `tracking-live-gtm` ha
 
 Then:
 
+Run `validate-schema --check-selectors` outside sandboxed environments by default. Do not first attempt the Playwright selector check inside the sandbox and then retry after it is intercepted.
+
 ```bash
 ./event-tracking validate-schema <artifact-dir>/event-schema.json --check-selectors
 ./event-tracking generate-spec <artifact-dir>/event-schema.json
@@ -46,6 +48,8 @@ Produce and share:
 
 - `<artifact-dir>/event-schema.json`
 - optional `<artifact-dir>/event-spec.md`
+- `<artifact-dir>/schema-decisions.jsonl` after schema confirmation
+- `<artifact-dir>/schema-restore/` restore snapshots after schema confirmation
 - updated `<artifact-dir>/workflow-state.json`
 
 ## Stop Boundary

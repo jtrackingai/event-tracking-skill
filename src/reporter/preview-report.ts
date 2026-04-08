@@ -1,6 +1,7 @@
 import { PreviewResult, TagVerificationResult, FailureCategory } from '../gtm/preview';
 import * as fs from 'fs';
 import * as path from 'path';
+import { buildTrackingHealthReport, formatTrackingHealthScore } from './tracking-health';
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString();
@@ -54,6 +55,14 @@ function formatParameters(params: Record<string, string>): string {
 }
 
 export function generatePreviewReport(result: PreviewResult, outputPath?: string): string {
+  const trackingHealth = buildTrackingHealthReport(result);
+  const totalSchemaEvents = typeof result.totalSchemaEvents === 'number' ? result.totalSchemaEvents : result.totalExpected;
+  const redundantAutoEventsSkipped =
+    typeof result.redundantAutoEventsSkipped === 'number'
+      ? result.redundantAutoEventsSkipped
+      : Math.max(0, totalSchemaEvents - result.totalExpected);
+  const unexpectedFiredEvents = result.unexpectedFiredEvents || [];
+  const unexpectedEventNames = Array.from(new Set(unexpectedFiredEvents.map(event => event.eventName))).sort();
   const firingRate = result.totalExpected > 0
     ? Math.round((result.totalFired / result.totalExpected) * 100)
     : 0;
@@ -87,13 +96,17 @@ export function generatePreviewReport(result: PreviewResult, outputPath?: string
     ``,
     `| Metric | Value |`,
     `|--------|-------|`,
-    `| Total Events Expected | ${result.totalExpected} |`,
+    `| Total Schema Events | ${totalSchemaEvents} |`,
+    `| Events Verified In Preview | ${result.totalExpected} |`,
+    `| Redundant Auto Events Skipped | ${redundantAutoEventsSkipped} |`,
     `| Events Fired ✅ | ${result.totalFired} |`,
     `| Actionable Failures ❌ | ${actionableFailures.length} |`,
     `| Expected Failures (login/journey) ⏭️ | ${expectedFailures.length} |`,
+    `| Unexpected Events Fired ℹ️ | ${unexpectedEventNames.length} |`,
     `| Raw Firing Rate | ${firingRate}% |`,
     `| Adjusted Rate (excl. login/journey) | ${adjustedFiringRate}% |`,
     `| High Priority Failures | ${highPriorityFailed.length} |`,
+    `| Tracking Health Score | ${formatTrackingHealthScore(trackingHealth.score)} (${trackingHealth.grade}) |`,
     ``,
   ];
 
@@ -107,6 +120,10 @@ export function generatePreviewReport(result: PreviewResult, outputPath?: string
     lines.push(`> ⚠️ **Warning**: Only ${adjustedFiringRate}% of verifiable events fired. Review actionable failures below.`);
   } else {
     lines.push(`> ❌ **Critical**: Only ${adjustedFiringRate}% of verifiable events fired. Check GTM container setup and measurement ID.`);
+  }
+
+  if (unexpectedEventNames.length > 0) {
+    lines.push(`> ℹ️  Unexpected events detected outside the approved schema: ${unexpectedEventNames.map(name => `\`${name}\``).join(', ')}.`);
   }
 
   lines.push('', '---', '');
@@ -180,6 +197,25 @@ export function generatePreviewReport(result: PreviewResult, outputPath?: string
         lines.push(`- **Sample Parameters:** ${formatParameters(sample.parameters)}`);
         lines.push(`- **Page:** ${sample.url}`);
       }
+      lines.push('');
+    }
+
+    lines.push('---', '');
+  }
+
+  if (unexpectedFiredEvents.length > 0) {
+    lines.push(`## ℹ️ Unexpected Events Fired (${unexpectedEventNames.length})`);
+    lines.push('');
+    lines.push('> These events fired during preview but are not defined in the current schema. Review them for duplicate tracking, legacy GTM tags, or unrelated container activity.');
+    lines.push('');
+
+    for (const eventName of unexpectedEventNames) {
+      const group = unexpectedFiredEvents.filter(event => event.eventName === eventName);
+      const sample = group[0];
+      lines.push(`### \`${eventName}\` (${group.length} hit${group.length > 1 ? 's' : ''})`);
+      lines.push('');
+      lines.push(`- **Sample Page:** ${sample?.url || '_unknown_'}`);
+      lines.push(`- **Sample Parameters:** ${sample ? formatParameters(sample.parameters) : '_none_'}`);
       lines.push('');
     }
 

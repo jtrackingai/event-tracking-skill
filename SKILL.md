@@ -15,6 +15,21 @@ Use it when:
 
 Do not assume the user wants the full workflow.
 
+<!-- event-tracking auto-update bootstrap:start -->
+## Auto-Update
+
+This installed root skill can self-check for newer GitHub versions before you continue.
+
+Before doing any task in this bundle:
+
+1. Resolve the directory that contains this installed `SKILL.md`. For Codex installs it is usually `$CODEX_HOME/skills/event-tracking-skill` or `~/.codex/skills/event-tracking-skill`.
+2. Run `node "<bundle-dir>/runtime/skill-runtime/update-check.mjs" --json`.
+3. If the result status is `update_available`, immediately run `node "<bundle-dir>/runtime/skill-runtime/self-update.mjs" --apply`.
+4. If the update succeeds, read `<bundle-dir>/SKILL.md` again before continuing so you are using the refreshed instructions.
+5. If the result status is `disabled`, treat this bundle as a local development link or repo checkout and continue without updating.
+
+<!-- event-tracking auto-update bootstrap:end -->
+
 ## Skill Family
 
 The skill family is split into one umbrella skill plus seven phase skills:
@@ -37,10 +52,11 @@ Once `site-analysis.json` indicates Shopify, keep discovery and grouping shared,
 2. Keep one artifact directory per site run. The CLI derives it as `<output-root>/<url-slug>` during `analyze`.
 3. If the user already provides an artifact directory or one of its files, resume from the earliest unmet prerequisite instead of restarting from `analyze`.
 4. Use `./event-tracking status <artifact-dir-or-file>` whenever the current checkpoint or next step is unclear.
-5. Google OAuth client metadata is embedded in the CLI and may be overridden with `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
-6. Any step that may trigger Google OAuth must run outside a sandboxed environment. In practice, treat `sync` as a non-sandbox command by default because the OAuth flow may need to bind a local callback on `127.0.0.1` and reach GTM APIs directly.
-7. Never auto-select a GTM account, GTM container, or GTM workspace on the user's behalf. Always show candidates and require explicit confirmation unless the user already provided the exact ID for that step.
-8. Do not continue past the phase boundary the user asked for. Stop after the requested phase unless the user explicitly asks to continue.
+5. Use `./event-tracking runs <output-root>` when the user wants to find recent site runs and does not remember the artifact directory.
+6. Google OAuth client metadata is embedded in the CLI and may be overridden with `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
+7. Any Playwright-backed or OAuth-triggering step must run outside a sandboxed environment by default. In practice, treat `analyze`, `validate-schema --check-selectors`, `preview`, and `sync` as non-sandbox commands, and do not first attempt them in the sandbox before retrying after interception.
+8. Never auto-select a GTM account, GTM container, or GTM workspace on the user's behalf. Always show candidates and require explicit confirmation unless the user already provided the exact ID for that step.
+9. Do not continue past the phase boundary the user asked for. Stop after the requested phase unless the user explicitly asks to continue.
 
 ## Routing Rules
 
@@ -62,6 +78,7 @@ If only the root skill is available, follow the same routing logic directly and 
 - When live GTM containers are detected on the site, do not bypass the live baseline review before schema generation.
 - Do not bypass schema approval before `generate-gtm` unless the user explicitly wants `--force`.
 - Treat preview QA and publish as separate decisions.
+- Treat `tracking-health.json` as the publish gate; do not jump to publish when health is missing, manual-only, or blocked unless the user explicitly wants `--force`.
 - Treat Shopify manual verification as the expected path for Shopify runs, not as a fallback error case.
 
 ## Resume And Closeout
@@ -78,7 +95,7 @@ When a phase or the full workflow ends, summarize:
 - current checkpoint from `workflow-state.json`
 - key output files from the completed phase
 - next recommended command, if any
-- remaining manual actions, especially for custom dimensions, Shopify install, preview QA, or publish approval
+- remaining manual actions, especially for custom dimensions, Shopify install, tracking health, preview QA, or publish approval
 
 ## References
 

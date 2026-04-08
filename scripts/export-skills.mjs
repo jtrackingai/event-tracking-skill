@@ -8,6 +8,8 @@ import {
   getSkillBundles,
   loadSourceSkillManifest,
   normalizeSkillContent,
+  SKILL_FAMILY_NAME,
+  SKILL_FAMILY_REPOSITORY,
 } from './skill-bundles.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -45,11 +47,29 @@ function readText(relativeSourcePath) {
   return fs.readFileSync(path.join(repoRoot, relativeSourcePath), 'utf8');
 }
 
+function readVersion() {
+  return readText('VERSION').trim();
+}
+
 function exportBundle(bundle) {
   const outputPath = path.join(repoRoot, getBundleOutputPath(bundle));
   ensureDir(outputPath);
+  const familyVersion = readVersion();
 
   writeFile(path.join(outputPath, 'SKILL.md'), normalizeSkillContent(bundle, readText(bundle.skillFile)));
+  writeFile(path.join(outputPath, 'VERSION'), `${familyVersion}\n`);
+  writeFile(path.join(outputPath, 'bundle.json'), JSON.stringify({
+    name: bundle.name,
+    kind: bundle.kind,
+    familyName: SKILL_FAMILY_NAME,
+    repository: SKILL_FAMILY_REPOSITORY,
+    familyVersion,
+    updateSource: {
+      provider: 'github-tarball',
+      versionUrl: process.env.EVENT_TRACKING_UPDATE_VERSION_URL || 'https://raw.githubusercontent.com/jtrackingai/event-tracking-skill/main/VERSION',
+      tarballUrl: process.env.EVENT_TRACKING_UPDATE_TARBALL_URL || 'https://codeload.github.com/jtrackingai/event-tracking-skill/tar.gz/refs/heads/main',
+    },
+  }, null, 2) + '\n');
   copyFile(bundle.metadataFile, path.join(outputPath, 'agents', 'openai.yaml'));
 
   (bundle.copiedDirectories || []).forEach(copyEntry => {
@@ -64,7 +84,7 @@ function exportBundle(bundle) {
   };
 }
 
-fs.rmSync(bundleRoot, { recursive: true, force: true });
+fs.rmSync(bundleRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 ensureDir(bundleRoot);
 
 const sourceManifest = loadSourceSkillManifest(repoRoot);

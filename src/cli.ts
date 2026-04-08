@@ -32,9 +32,30 @@ import {
   WORKFLOW_STATE_FILE,
   WorkflowState,
   getSchemaHash,
+  readWorkflowState,
   refreshWorkflowState,
   resolveArtifactDirFromInput,
 } from './workflow/state';
+import {
+  RUN_CONTEXT_FILE,
+  RUN_INDEX_FILE,
+  readRunIndex,
+  updateRunIndexFromState,
+  upsertRunContext,
+} from './workflow/run-index';
+import { recordSchemaConfirmationAudit } from './workflow/schema-audit';
+import {
+  TRACKING_HEALTH_FILE,
+  TRACKING_HEALTH_HISTORY_DIR,
+  TrackingHealthReport,
+  buildManualTrackingHealthReport,
+  buildTrackingHealthReport,
+  formatTrackingHealthScore,
+  hasBlockingTrackingHealth,
+  readTrackingHealthReport,
+  writeTrackingHealthHistory,
+  writeTrackingHealthReport,
+} from './reporter/tracking-health';
 
 const program = new Command();
 
@@ -42,6 +63,11 @@ const program = new Command();
 
 const DEFAULT_OUTPUT_ROOT = path.join(process.cwd(), 'output');
 const PUBLIC_COMMAND = process.env.EVENT_TRACKING_PUBLIC_CMD?.trim() || 'event-tracking';
+
+interface AnalyzeOutputLocation {
+  artifactDir: string;
+  outputRoot: string;
+}
 
 function slugifyPathSegment(value: string): string {
   return value
@@ -104,11 +130,29 @@ async function promptRequired(question: string, emptyMessage: string): Promise<s
   }
 }
 
+function getCliVersion(): string {
+  const candidates = [
+    path.join(__dirname, '..', 'package.json'),
+    path.join(process.cwd(), 'package.json'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = readJsonFile<{ version?: string }>(candidate);
+      if (parsed.version) return parsed.version;
+    } catch {
+      // ignore and try the next candidate
+    }
+  }
+
+  return '0.0.0';
+}
+
 async function requireAnalyzeOutputDir(
   url: string,
   explicitOutputRoot?: string,
   explicitOutputDir?: string,
-): Promise<string> {
+): Promise<AnalyzeOutputLocation> {
   const providedDir = explicitOutputDir?.trim();
   const providedRoot = explicitOutputRoot?.trim();
 
@@ -116,7 +160,13 @@ async function requireAnalyzeOutputDir(
     throw new Error('Use either --output-root or --output-dir, not both.');
   }
 
-  if (providedDir) return resolveOutputDir(providedDir);
+  if (providedDir) {
+    const artifactDir = resolveOutputDir(providedDir);
+    return {
+      artifactDir,
+      outputRoot: path.dirname(artifactDir),
+    };
+  }
 
   const outputRoot = providedRoot
     ? resolveOutputRoot(providedRoot)
@@ -127,7 +177,10 @@ async function requireAnalyzeOutputDir(
   const artifactDir = path.join(outputRoot, suggestedOutputDir(url));
   console.log(`\n📁 Output root: ${outputRoot}`);
   console.log(`📁 Artifact directory for this URL: ${artifactDir}`);
-  return resolveOutputDir(artifactDir);
+  return {
+    artifactDir: resolveOutputDir(artifactDir),
+    outputRoot,
+  };
 }
 
 function resolveArtifactDirFromFile(file: string): string {
@@ -151,6 +204,21 @@ function tryReadJsonFile<T>(file: string): T | null {
 
 function writeJsonFile(file: string, value: unknown): void {
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
+}
+
+function refreshAndIndexWorkflowState(
+  artifactDir: string,
+  update?: Parameters<typeof refreshWorkflowState>[1],
+  runContext?: { outputRoot?: string; siteUrl?: string },
+): WorkflowState {
+  upsertRunContext({
+    artifactDir,
+    outputRoot: runContext?.outputRoot,
+    siteUrl: runContext?.siteUrl,
+  });
+  const workflowState = refreshWorkflowState(artifactDir, update);
+  updateRunIndexFromState(workflowState);
+  return workflowState;
 }
 
 function uniq(values: string[]): string[] {
@@ -244,9 +312,9 @@ function printShopifyBootstrapSummary(reviewItems: Array<{
   };
 
   console.log(`\n🛍️  Shopify bootstrap summary:`);
-  console.log(`   建议保留 (${groups.keep.length}): ${groups.keep.map(item => item.eventName).join(', ') || '—'}`);
-  console.log(`   建议人工确认 (${groups.review.length}): ${groups.review.map(item => item.eventName).join(', ') || '—'}`);
-  console.log(`   建议删除 (${groups.remove.length}): ${groups.remove.map(item => item.eventName).join(', ') || '—'}`);
+  console.log(`   Keep (${groups.keep.length}): ${groups.keep.map(item => item.eventName).join(', ') || '—'}`);
+  console.log(`   Review (${groups.review.length}): ${groups.review.map(item => item.eventName).join(', ') || '—'}`);
+  console.log(`   Remove (${groups.remove.length}): ${groups.remove.map(item => item.eventName).join(', ') || '—'}`);
 }
 
 async function selectFromList<T extends { name?: string; publicId?: string }>(
@@ -273,12 +341,55 @@ function getRequiredLiveGtmIds(analysis: SiteAnalysis, override?: string): strin
   return uniq((analysis.gtmPublicIds || []).map(id => id.toUpperCase()));
 }
 
+function getTrackingHealthFile(artifactDir: string): string {
+  return path.join(artifactDir, TRACKING_HEALTH_FILE);
+}
+
+function evaluatePublishReadiness(artifactDir: string): {
+  blocking: boolean;
+  messages: string[];
+  health: TrackingHealthReport | null;
+} {
+  const healthFile = getTrackingHealthFile(artifactDir);
+  const previewResultFile = path.join(artifactDir, 'preview-result.json');
+  const health = readTrackingHealthReport(healthFile);
+
+  if (!health) {
+    return {
+      blocking: true,
+      messages: [
+        fs.existsSync(previewResultFile)
+          ? `Missing ${TRACKING_HEALTH_FILE}. Re-run preview before publishing.`
+          : 'No preview verification found. Run preview before publishing.',
+      ],
+      health: null,
+    };
+  }
+
+  const blocking = hasBlockingTrackingHealth(health);
+  const messages = [...health.blockers];
+
+  if (blocking && messages.length === 0) {
+    messages.push(
+      `Tracking health is ${health.grade} (${formatTrackingHealthScore(health.score)}). ` +
+      'Review preview-report.md and re-run preview before publishing.',
+    );
+  } else if (!blocking && health.grade === 'warning') {
+    messages.push(
+      `Tracking health is warning (${formatTrackingHealthScore(health.score)}). ` +
+      'Review preview-report.md before publishing.',
+    );
+  }
+
+  return { blocking, messages, health };
+}
+
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 program
   .name('event-tracking')
   .description('Automated web event tracking setup with GA4 + GTM')
-  .version('1.0.0');
+  .version(getCliVersion());
 
 // STEP 1: Analyze website
 program
@@ -307,7 +418,8 @@ program
       ? opts.urls.split(',').map(u => u.trim()).filter(Boolean)
       : [];
     const storefrontPassword = opts.storefrontPassword?.trim() || process.env.SHOPIFY_STOREFRONT_PASSWORD?.trim();
-    const dir = await requireAnalyzeOutputDir(url, opts.outputRoot, opts.outputDir);
+    const outputLocation = await requireAnalyzeOutputDir(url, opts.outputRoot, opts.outputDir);
+    const dir = outputLocation.artifactDir;
 
     console.log(`\n🔍 Analyzing site: ${url}`);
     console.log(`   Artifact directory: ${dir}`);
@@ -335,7 +447,10 @@ program
 
     const outFile = path.join(dir, 'site-analysis.json');
     writeJsonFile(outFile, siteAnalysis);
-    const workflowState = refreshWorkflowState(dir);
+    const workflowState = refreshAndIndexWorkflowState(dir, undefined, {
+      outputRoot: outputLocation.outputRoot,
+      siteUrl: siteAnalysis.rootUrl,
+    });
 
     console.log(`\n✅ Analysis complete:`);
     console.log(`   Pages analyzed: ${siteAnalysis.pages.length}`);
@@ -399,7 +514,7 @@ program
       confirmedHash: currentHash,
     };
     writeJsonFile(resolvedFile, analysis);
-    const workflowState = refreshWorkflowState(resolveArtifactDirFromFile(resolvedFile));
+    const workflowState = refreshAndIndexWorkflowState(resolveArtifactDirFromFile(resolvedFile));
 
     console.log(`\n✅ Page groups confirmed.`);
     console.log(`   Confirmation recorded in: ${resolvedFile}`);
@@ -459,7 +574,7 @@ program
     const reviewFile = path.join(artifactDir, 'live-gtm-review.md');
     writeJsonFile(outFile, liveAnalysis);
     fs.writeFileSync(reviewFile, generateLiveGtmReviewMarkdown(liveAnalysis), 'utf8');
-    const workflowState = refreshWorkflowState(artifactDir);
+    const workflowState = refreshAndIndexWorkflowState(artifactDir);
 
     console.log(`\n✅ Live GTM baseline analyzed:`);
     console.log(`   Containers analyzed: ${liveAnalysis.containers.length}`);
@@ -580,7 +695,9 @@ program
 
     const artifactDir = resolveArtifactDirFromFile(resolvedFile);
     const currentHash = getSchemaHash(schema);
-    const existingState = refreshWorkflowState(artifactDir);
+    const previousWorkflowState = readWorkflowState(artifactDir);
+    const previousConfirmedHash = previousWorkflowState?.schemaReview.confirmedHash;
+    const existingState = refreshAndIndexWorkflowState(artifactDir);
     const quota = getQuotaSummary(schema);
 
     console.log(`\n📋 Schema review summary:`);
@@ -604,7 +721,13 @@ program
       }
     }
 
-    const workflowState = refreshWorkflowState(artifactDir, {
+    const schemaAudit = recordSchemaConfirmationAudit({
+      artifactDir,
+      schemaFile: resolvedFile,
+      schema,
+      previousConfirmedHash,
+    });
+    const workflowState = refreshAndIndexWorkflowState(artifactDir, {
       schemaReview: {
         status: 'confirmed',
         confirmedAt: new Date().toISOString(),
@@ -613,6 +736,15 @@ program
     });
 
     console.log(`\n✅ Schema confirmed.`);
+    console.log(`   Restore snapshot: ${schemaAudit.restoreFile}`);
+    console.log(`   Decision audit: ${schemaAudit.auditFile}`);
+    if (schemaAudit.entry.summary.added.length || schemaAudit.entry.summary.changed.length || schemaAudit.entry.summary.removed.length) {
+      console.log(
+        `   Schema delta: ${schemaAudit.entry.summary.added.length} added, ` +
+        `${schemaAudit.entry.summary.changed.length} changed, ` +
+        `${schemaAudit.entry.summary.removed.length} removed`,
+      );
+    }
     console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
     if (!workflowState.artifacts.eventSpec) {
       console.log(`   Recommended next step: ${formatPublicCommand(['generate-spec', resolvedFile])}`);
@@ -726,7 +858,7 @@ program
       console.log(`   Review details: ${shopifyReviewFile || '—'}`);
     }
     console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
-    refreshWorkflowState(artifactDir);
+    refreshAndIndexWorkflowState(artifactDir);
   });
 
 // STEP 3: Generate GTM config
@@ -757,7 +889,7 @@ program
       process.exit(1);
     }
 
-    const workflowState = refreshWorkflowState(artifactDir);
+    const workflowState = refreshAndIndexWorkflowState(artifactDir);
     if (!opts.force && workflowState.schemaReview.status !== 'confirmed') {
       console.error('\n❌ event-schema.json is not currently confirmed.');
       if (workflowState.warnings.length > 0) {
@@ -786,7 +918,7 @@ program
       : artifactDir;
     const outFile = path.join(dir, 'gtm-config.json');
     fs.writeFileSync(outFile, JSON.stringify(config, null, 2));
-    refreshWorkflowState(dir);
+    refreshAndIndexWorkflowState(dir);
 
     const { tag: tags, trigger: triggers, variable: variables } = config.containerVersion;
     console.log(`\n✅ GTM configuration generated:`);
@@ -933,7 +1065,7 @@ program
       syncedAt: new Date().toISOString(),
     }, null, 2));
     console.log(`\n   GTM context saved: ${contextFile}`);
-    refreshWorkflowState(artifactDir);
+    refreshAndIndexWorkflowState(artifactDir);
 
     const siteAnalysis = tryReadJsonFile<SiteAnalysis>(path.join(artifactDir, 'site-analysis.json'));
     if (siteAnalysis && isShopifyPlatform(siteAnalysis.platform)) {
@@ -971,12 +1103,14 @@ program
   .option('--container-id <id>', 'GTM Container ID')
   .option('--workspace-id <id>', 'GTM Workspace ID')
   .option('--public-id <id>', 'GTM Container Public ID (e.g. ABC123 from GTM-ABC123)')
+  .option('--baseline <file>', 'Optional previous tracking-health.json for regression comparison')
   .action(async (schemaFile: string, opts: {
     contextFile?: string;
     accountId?: string;
     containerId?: string;
     workspaceId?: string;
     publicId?: string;
+    baseline?: string;
   }) => {
     const schema = readJsonFile<EventSchema>(schemaFile);
 
@@ -1013,7 +1147,17 @@ program
       console.log(`\n🛍️  Shopify site detected. Skipping automated browser preview.`);
       const dir = path.dirname(schemaFile);
       const { reportFile, jsonFile } = writeShopifyPreviewInstructions(dir, siteAnalysis, gtmPublicId);
-      refreshWorkflowState(dir, {
+      const healthFile = path.join(dir, TRACKING_HEALTH_FILE);
+      const manualTrackingHealth = buildManualTrackingHealthReport({
+        siteUrl: siteAnalysis.rootUrl,
+        gtmContainerId: gtmPublicId,
+        generatedAt: new Date().toISOString(),
+        reason: 'Shopify custom pixel verification requires a manual GA4 Realtime and Shopify pixel debugging pass.',
+        totalSchemaEvents: schema.events.length,
+      });
+      writeTrackingHealthReport(healthFile, manualTrackingHealth);
+      const historyFile = writeTrackingHealthHistory(dir, manualTrackingHealth);
+      refreshAndIndexWorkflowState(dir, {
         verification: {
           status: 'completed',
           verifiedAt: new Date().toISOString(),
@@ -1023,6 +1167,8 @@ program
       });
       console.log(`   Manual verification guide saved to: ${reportFile}`);
       console.log(`   Preview metadata saved to: ${jsonFile}`);
+      console.log(`   Tracking health saved to: ${healthFile}`);
+      console.log(`   Tracking health history saved to: ${historyFile}`);
       console.log(`\n   Next step: install the Shopify custom pixel, publish the GTM workspace, and validate in GA4 Realtime.`);
       return;
     }
@@ -1087,7 +1233,15 @@ program
 
     const jsonFile = path.join(dir, 'preview-result.json');
     fs.writeFileSync(jsonFile, JSON.stringify(previewResult, null, 2));
-    refreshWorkflowState(dir, {
+    const healthFile = path.join(dir, TRACKING_HEALTH_FILE);
+    const baselineFile = opts.baseline?.trim()
+      ? path.resolve(opts.baseline)
+      : (fs.existsSync(healthFile) ? healthFile : undefined);
+    const baselineHealth = baselineFile ? readTrackingHealthReport(baselineFile) : null;
+    const trackingHealth = buildTrackingHealthReport(previewResult, baselineHealth, baselineFile);
+    writeTrackingHealthReport(healthFile, trackingHealth);
+    const historyFile = writeTrackingHealthHistory(dir, trackingHealth);
+    refreshAndIndexWorkflowState(dir, {
       verification: {
         status: 'completed',
         verifiedAt: previewResult.previewEndedAt,
@@ -1103,10 +1257,30 @@ program
     console.log('─'.repeat(60));
     console.log(`\n✅ Report saved to: ${reportFile}`);
     console.log(`   Raw data saved to: ${jsonFile}`);
+    console.log(`   Tracking health saved to: ${healthFile} (score ${formatTrackingHealthScore(trackingHealth.score)}, ${trackingHealth.grade})`);
+    console.log(`   Tracking health history saved to: ${historyFile}`);
+    if (trackingHealth.baseline) {
+      if (typeof trackingHealth.baseline.scoreDelta === 'number') {
+        const delta = trackingHealth.baseline.scoreDelta >= 0
+          ? `+${trackingHealth.baseline.scoreDelta}`
+          : `${trackingHealth.baseline.scoreDelta}`;
+        console.log(`   Baseline delta: ${delta} point(s) vs ${trackingHealth.baseline.file || 'previous health report'}`);
+      } else {
+        console.log(`   Baseline delta: n/a vs ${trackingHealth.baseline.file || 'previous health report'}`);
+      }
+      if (trackingHealth.baseline.newFailures.length > 0) {
+        console.log(`   New failures: ${trackingHealth.baseline.newFailures.join(', ')}`);
+      }
+    }
+    if (trackingHealth.unexpectedEventNames.length > 0) {
+      console.log(`   Unexpected events: ${trackingHealth.unexpectedEventNames.join(', ')}`);
+    }
 
-    if (previewResult.totalFired > 0) {
+    if (!hasBlockingTrackingHealth(trackingHealth) && previewResult.totalFired > 0) {
       console.log(`\n   Next step:`);
       console.log(`   ${formatPublicCommand(['publish', '--context-file', path.join(dir, 'gtm-context.json'), '--version-name', 'GA4 Events v1'])}`);
+    } else if (hasBlockingTrackingHealth(trackingHealth)) {
+      console.log(`\n   Publish is blocked until tracking-health blockers are resolved.`);
     }
   });
 
@@ -1120,6 +1294,7 @@ program
   .option('--container-id <id>', 'GTM Container ID')
   .option('--workspace-id <id>', 'GTM Workspace ID')
   .option('--version-name <name>', 'Version name for the published container')
+  .option('--force', 'Publish even when preview health is missing or blocked')
   .option('--yes', 'Skip confirmation prompt')
   .action(async (opts: {
     contextFile?: string;
@@ -1128,6 +1303,7 @@ program
     containerId?: string;
     workspaceId?: string;
     versionName?: string;
+    force?: boolean;
     yes?: boolean;
   }) => {
     let accountId = opts.accountId;
@@ -1155,6 +1331,26 @@ program
       throw new Error('Missing artifact directory. Provide --context-file or --artifact-dir so URL-scoped OAuth credentials can be loaded.');
     }
 
+    const publishReadiness = evaluatePublishReadiness(artifactDir);
+    if (publishReadiness.blocking && !opts.force) {
+      console.error(`\n❌ Publish blocked:`);
+      for (const message of publishReadiness.messages) {
+        console.error(`   - ${message}`);
+      }
+      console.error(`   Re-run preview after fixes, or use --force to override.`);
+      process.exit(1);
+    }
+
+    if (publishReadiness.messages.length > 0) {
+      console.log(`\n⚠️  Publish readiness notes:`);
+      for (const message of publishReadiness.messages) {
+        console.log(`   - ${message}`);
+      }
+    }
+    if (publishReadiness.blocking && opts.force) {
+      console.log(`   Force override enabled. Continuing anyway.`);
+    }
+
     if (!opts.yes) {
       const confirm = await prompt('\n⚠️  This will PUBLISH the GTM container (affects live site). Continue? (yes/no): ');
       if (confirm.toLowerCase() !== 'yes') {
@@ -1177,7 +1373,7 @@ program
     console.log(`   Version ID: ${result.versionId}`);
     console.log(`\n   The GA4 event tracking is now LIVE on your website.`);
     console.log(`   Monitor events in GA4 Realtime: https://analytics.google.com/`);
-    refreshWorkflowState(artifactDir, {
+    refreshAndIndexWorkflowState(artifactDir, {
       publish: {
         status: 'completed',
         publishedAt: new Date().toISOString(),
@@ -1191,9 +1387,15 @@ program
 program
   .command('status <artifact-path>')
   .description('Inspect workflow state for an artifact directory or one of its files')
-  .action((artifactPath: string) => {
+  .option('--json', 'Print machine-readable workflow state JSON')
+  .action((artifactPath: string, opts: { json?: boolean }) => {
     const artifactDir = resolveArtifactDirFromInput(artifactPath);
-    const workflowState = refreshWorkflowState(artifactDir);
+    const workflowState = refreshAndIndexWorkflowState(artifactDir);
+
+    if (opts.json) {
+      console.log(JSON.stringify(workflowState, null, 2));
+      return;
+    }
 
     console.log(`\n📍 Workflow status`);
     console.log(`   Artifact directory: ${workflowState.artifactDir}`);
@@ -1220,9 +1422,14 @@ program
       ['schema-context.json', workflowState.artifacts.schemaContext],
       ['event-schema.json', workflowState.artifacts.eventSchema],
       ['event-spec.md', workflowState.artifacts.eventSpec],
+      ['schema-decisions.jsonl', workflowState.artifacts.schemaDecisionAudit],
+      ['schema-restore/', workflowState.artifacts.schemaRestore],
       ['gtm-config.json', workflowState.artifacts.gtmConfig],
       ['gtm-context.json', workflowState.artifacts.gtmContext],
       ['preview-report.md', workflowState.artifacts.previewReport],
+      [TRACKING_HEALTH_FILE, workflowState.artifacts.trackingHealth],
+      [TRACKING_HEALTH_HISTORY_DIR, workflowState.artifacts.trackingHealthHistory],
+      [RUN_CONTEXT_FILE, fs.existsSync(path.join(workflowState.artifactDir, RUN_CONTEXT_FILE))],
       [WORKFLOW_STATE_FILE, true],
     ];
     artifactFlags.forEach(([label, present]) => {
@@ -1232,6 +1439,21 @@ program
     console.log(`\n🛂 Review gates:`);
     console.log(`   - page groups: ${workflowState.pageGroupsReview.status}${workflowState.pageGroupsReview.confirmedAt ? ` (${workflowState.pageGroupsReview.confirmedAt})` : ''}`);
     console.log(`   - schema: ${workflowState.schemaReview.status}${workflowState.schemaReview.confirmedAt ? ` (${workflowState.schemaReview.confirmedAt})` : ''}`);
+    if (workflowState.verification.status === 'completed') {
+      const scoreLabel = formatTrackingHealthScore(
+        workflowState.verification.healthScore === undefined ? null : workflowState.verification.healthScore,
+      );
+      console.log(
+        `   - verification: completed` +
+        `${workflowState.verification.healthGrade ? ` (${workflowState.verification.healthGrade}, ${scoreLabel})` : ''}`,
+      );
+      if ((workflowState.verification.healthBlockers || []).length > 0) {
+        console.log(`   - publish blockers: ${workflowState.verification.healthBlockers!.join(' | ')}`);
+      }
+      if ((workflowState.verification.unexpectedEventCount || 0) > 0) {
+        console.log(`   - unexpected events: ${workflowState.verification.unexpectedEventCount}`);
+      }
+    }
 
     if (workflowState.warnings.length > 0) {
       console.log(`\n⚠️  Warnings:`);
@@ -1242,6 +1464,45 @@ program
     if (workflowState.nextCommand) {
       console.log(`   ${workflowState.nextCommand}`);
     }
+  });
+
+program
+  .command('runs [output-root]')
+  .description('List known event-tracking artifact directories from an output root')
+  .option('--json', 'Print machine-readable run index JSON')
+  .option('--limit <count>', 'Maximum number of runs to show', '10')
+  .action((outputRoot: string | undefined, opts: { json?: boolean; limit?: string }) => {
+    const resolvedRoot = path.resolve(outputRoot?.trim() || DEFAULT_OUTPUT_ROOT);
+    const limit = Math.max(1, Number.parseInt(opts.limit || '10', 10) || 10);
+    const entries = readRunIndex(resolvedRoot).slice(0, limit);
+
+    if (opts.json) {
+      console.log(JSON.stringify({
+        outputRoot: resolvedRoot,
+        indexFile: path.join(resolvedRoot, RUN_INDEX_FILE),
+        runs: entries,
+      }, null, 2));
+      return;
+    }
+
+    console.log(`\n📍 Event tracking runs`);
+    console.log(`   Output root: ${resolvedRoot}`);
+    if (entries.length === 0) {
+      console.log(`   No runs found. Run analyze first, or pass the output root that contains your artifact directories.`);
+      return;
+    }
+
+    entries.forEach((entry, index) => {
+      console.log(`\n   [${index + 1}] ${entry.siteUrl || '(site unknown)'}`);
+      console.log(`       Artifact directory: ${entry.artifactDir}`);
+      console.log(`       Checkpoint: ${entry.currentCheckpoint}`);
+      if (entry.platformType) {
+        console.log(`       Platform: ${entry.platformType}`);
+      }
+      if (entry.nextCommand) {
+        console.log(`       Next: ${entry.nextCommand}`);
+      }
+    });
   });
 
 // Auth management
@@ -1438,7 +1699,7 @@ program
     const spec = lines.join('\n');
     const outFile = path.join(artifactDir, 'event-spec.md');
     fs.writeFileSync(outFile, spec, 'utf-8');
-    refreshWorkflowState(artifactDir);
+    refreshAndIndexWorkflowState(artifactDir);
 
     console.log(`\n✅ Event spec generated: ${outFile}`);
     console.log(`   ${schema.events.length} events documented`);

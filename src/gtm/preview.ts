@@ -32,9 +32,12 @@ export interface PreviewResult {
   previewEndedAt: string;
   gtmContainerId: string;
   results: TagVerificationResult[];
+  totalSchemaEvents: number;
   totalExpected: number;
   totalFired: number;
   totalFailed: number;
+  redundantAutoEventsSkipped: number;
+  unexpectedFiredEvents: FiredEvent[];
 }
 
 function parseGA4Payload(body: string): Record<string, string> {
@@ -579,7 +582,7 @@ export async function runPreviewVerification(
   });
 
   // Also include any unexpected GA4 events that fired
-  const expectedEventNames = new Set(managedEvents.map(e => e.eventName));
+  const expectedEventNames = new Set(schema.events.map(event => event.eventName));
   const unexpectedFired = allFiredEvents.filter(fe => !expectedEventNames.has(fe.eventName));
   if (unexpectedFired.length > 0) {
     console.log(`  ℹ️  ${unexpectedFired.length} additional events fired (not in schema): ${[...new Set(unexpectedFired.map(e => e.eventName))].join(', ')}`);
@@ -594,8 +597,11 @@ export async function runPreviewVerification(
     previewEndedAt: new Date().toISOString(),
     gtmContainerId: gtmPublicId,
     results,
-    totalExpected: schema.events.length,
+    totalSchemaEvents: schema.events.length,
+    totalExpected: managedEvents.length,
     totalFired,
     totalFailed,
+    redundantAutoEventsSkipped: schema.events.length - managedEvents.length,
+    unexpectedFiredEvents: unexpectedFired,
   };
 }
