@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="docs/assets/jtracking-social-preview.png" width="100%" />
+</p>
+<p align="center">
+  <b>GA4 + GTM, done by AI. From site analysis to go live.</b><br/>
+  Works with Cursor · Codex · Any AI Agent
+</p>
+<p align="center">
+  <a href="#What-You-Get">What You Get</a> · 
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="https://www.jtracking.ai/skills">Website</a>
+</p>
+
 # Event Tracking Skill
 
 `event-tracking-skill` is a local-first skill and CLI for planning, generating, validating, and syncing GA4 event tracking in Google Tag Manager.
