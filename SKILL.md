@@ -78,6 +78,12 @@ If only the root skill is available, follow the same routing logic directly and 
 ## Stop Rules
 
 - Do not bypass page-group approval before `prepare-schema`.
+- For key decision checkpoints, always require explicit user confirmation before continuing:
+  - `pageGroups` (before `confirm-page-groups` and before `prepare-schema`)
+  - `event-schema.json` (before `confirm-schema` and before `generate-gtm`)
+  - GTM target selection (account/container/workspace during `sync`)
+  - publish decision (before `publish`)
+- If confirmation is missing or ambiguous, stop and ask; do not auto-proceed.
 - When live GTM containers are detected on the site, do not bypass the live baseline review before schema generation.
 - Do not bypass schema approval before `generate-gtm` unless the user explicitly wants `--force`.
 - Treat preview QA and publish as separate decisions.

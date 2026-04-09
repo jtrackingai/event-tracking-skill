@@ -226,6 +226,12 @@ Execution environment note:
 Important workflow note:
 
 - `prepare-schema` requires `pageGroups` to already be filled in `site-analysis.json` and explicitly confirmed
+- Key decision checkpoints require explicit user confirmation before proceeding:
+  - `pageGroups` review/approval
+  - final `event-schema.json` approval
+  - GTM account/container/workspace target during `sync`
+  - publish decision
+- If any of the above confirmations are not explicit, stop and confirm first; do not auto-advance.
 - after grouping pages, run `./event-tracking confirm-page-groups <artifact-dir>/site-analysis.json`
 - if `site-analysis.json` detected real GTM public IDs, run `./event-tracking analyze-live-gtm <artifact-dir>/site-analysis.json` before `prepare-schema`
 - for generic sites, `event-schema.json` is authored after `prepare-schema` from `schema-context.json`

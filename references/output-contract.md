@@ -55,6 +55,13 @@ At the same time, each write is snapshotted into `versions/<run-id>/...` so hist
 
 `event-schema.json` is the primary editable artifact. The agent presents it as a table and waits for user confirmation before proceeding to GTM config generation. Any edits made here flow through to all downstream steps.
 
+The following checkpoints are explicit approval gates and should never be auto-advanced without clear user confirmation:
+
+- page-group approval (`confirm-page-groups`)
+- schema approval (`confirm-schema`)
+- GTM target selection during `sync` (account/container/workspace)
+- publish decision (`publish`)
+
 After the schema is approved, run `./event-tracking confirm-schema <artifact-dir>/event-schema.json`. That command stores a hash of the approved schema snapshot in `workflow-state.json`.
 
 `confirm-schema` also writes a restore snapshot under `schema-restore/` and appends a schema decision audit entry to `schema-decisions.jsonl`.
