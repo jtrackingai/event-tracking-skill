@@ -58,8 +58,9 @@ Once `site-analysis.json` indicates Shopify, keep discovery and grouping shared,
 8. Never auto-select a GTM account, GTM container, or GTM workspace on the user's behalf. Always show candidates and require explicit confirmation unless the user already provided the exact ID for that step.
 9. Prefer scenario-first entry commands for user-facing flows: `run-new-setup`, `run-tracking-update`, `run-upkeep`, `run-health-audit`. Use `start-scenario` when the user wants a labeled scenario run without immediate template execution.
 10. Use `./event-tracking scenario <artifact-dir> --set <scenario> [--sub-scenario ...] [--new-run]` for metadata-only adjustments when you should not alter execution flow.
-11. Use `./event-tracking scenario-transition <artifact-dir> --to <scenario> [--reason ...]` when the user wants an auditable handoff between scenarios.
-12. Do not continue past the phase boundary the user asked for. Stop after the requested phase unless the user explicitly asks to continue.
+11. Use `./event-tracking scenario-check <artifact-dir>` when the question is "is this scenario ready" rather than "what is the next workflow checkpoint".
+12. Use `./event-tracking scenario-transition <artifact-dir> --to <scenario> [--reason ...]` when the user wants an auditable handoff between scenarios.
+13. Do not continue past the phase boundary the user asked for. Stop after the requested phase unless the user explicitly asks to continue.
 
 ## Routing Rules
 

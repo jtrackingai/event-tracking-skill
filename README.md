@@ -152,7 +152,8 @@ The exported bundles rewrite command examples to the public `event-tracking` com
 
 ### Scenario-First (Recommended)
 
-Use scenario templates as the default entry point. They create a new scenario run, keep versioned history, and generate scenario-specific deliverables when inputs are ready.
+Use scenario templates when you already know the delivery intent and want versioned run history grouped by scenario from the start.
+For a brand-new URL with no artifacts yet, `run-new-setup` is a labeled entry point, not a replacement for `analyze`; it will usually point you to `analyze` as the first execution command.
 
 ```bash
 # New implementation from scratch
@@ -170,7 +171,8 @@ Use scenario templates as the default entry point. They create a new scenario ru
 
 Use these helpers when needed:
 
-- `./event-tracking scenario-check <artifact-dir>` to verify required inputs for the current scenario
+- `./event-tracking scenario <artifact-dir> --set <scenario> --new-run [--sub-scenario ...] [--input-scope ...]` to relabel or branch a run without executing a workflow step
+- `./event-tracking scenario-check <artifact-dir>` to validate scenario-required artifacts and return the next scenario step
 - `./event-tracking scenario-transition <artifact-dir> --to <scenario> --reason "<why>"` to record scenario handoff decisions
 - `./event-tracking runs <output-root> --json` to inspect recent runs with scenario summary
 
@@ -178,6 +180,7 @@ Scenario guardrails:
 
 - `tracking_health_audit` is audit-only. `generate-gtm`, `sync`, and `publish` are blocked by default unless explicitly forced.
 - Scenario report commands are intent-gated (for example, upkeep report commands require `upkeep`).
+- `scenario-check` is a readiness check for the current scenario contract; use `status` when you need checkpoint, warning, and gate details.
 
 ### Use It As A Skill
 
@@ -278,6 +281,15 @@ Scenario gate note:
 
 If a user already has an artifact directory, resume from the earliest unmet prerequisite instead of restarting from `analyze`. If they only know the output root, use `./event-tracking runs <output-root>` to find recent artifact directories.
 
+## Advanced Commands
+
+- `./event-tracking scenario <artifact-dir> --set <scenario> --new-run [--sub-scenario ...] [--input-scope ...]` updates run metadata only. Use it when you want to relabel or branch work without executing a workflow step.
+- `./event-tracking sync <artifact-dir>/gtm-config.json --dry-run` prints planned GTM creates, updates, and deletes without modifying the workspace.
+- `./event-tracking sync <artifact-dir>/gtm-config.json --new-workspace` explicitly creates a new workspace instead of selecting an existing one.
+- `./event-tracking analyze-live-gtm <artifact-dir>/site-analysis.json --gtm-id GTM-XXXXXXX[,GTM-YYYYYYY]` overrides or supplements the live GTM IDs detected during crawl.
+- `./event-tracking preview <artifact-dir>/event-schema.json --context-file <artifact-dir>/gtm-context.json --baseline <previous-tracking-health.json>` compares the new preview health report against an older baseline.
+- `./event-tracking auth-clear --context-file <artifact-dir>/gtm-context.json` clears the URL-scoped OAuth cache for one run. Use `--output-root <output-root>` to clear all cached auth under an output root.
+
 ## Required Inputs
 
 Before running the full workflow, prepare:
@@ -340,6 +352,7 @@ During `sync`, GTM target selection is a required user-confirmation step.
 - always show the candidate list and require explicit user confirmation at each selection step
 - a matching domain name or a likely production-looking option is not enough to justify auto-selection
 - only skip a selection step when the user has already provided the exact GTM ID for that step
+- if no existing workspaces are available, `sync` asks before creating a new default workspace; `--new-workspace` makes that choice explicit up front
 
 ## Important Notes
 

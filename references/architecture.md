@@ -19,6 +19,7 @@ If you are working in the source repository, the repo-facing overview still live
 The CLI now layers scenario orchestration on top of checkpoint execution:
 
 - start a labeled scenario run: `start-scenario`
+- relabel scenario metadata without executing a step: `scenario`
 - run scenario templates: `run-new-setup`, `run-tracking-update`, `run-upkeep`, `run-health-audit`
 - validate scenario readiness: `scenario-check`
 - record scenario handoff with reason: `scenario-transition`

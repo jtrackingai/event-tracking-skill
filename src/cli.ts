@@ -1533,9 +1533,17 @@ program
       } else {
         const workspaces = await client.listWorkspaces(accountId, containerId);
         if (workspaces.length === 0) {
+          const answer = await prompt(
+            '\nNo GTM workspaces were found for this container. ' +
+            'Create a new workspace named "event-tracking-auto"? (yes/no): ',
+          );
+          if (answer.toLowerCase() !== 'yes') {
+            console.log('Sync cancelled. Re-run with --new-workspace if you want to create a workspace explicitly.');
+            return;
+          }
           const ws = await client.createWorkspace(accountId, containerId, 'event-tracking-auto');
           workspaceId = ws.workspaceId;
-          console.log(`\nCreated default workspace: ${ws.name}`);
+          console.log(`\n✅ Created workspace: ${ws.name} (${ws.workspaceId})`);
         } else {
           const ws = await selectFromList(workspaces, 'GTM Workspace', (w, i) => `${w.name} (ID: ${w.workspaceId})`);
           workspaceId = ws.workspaceId;
@@ -1945,7 +1953,7 @@ program
 
 program
   .command('scenario <artifact-path>')
-  .description('Inspect or update scenario metadata for the active run in an artifact directory')
+  .description('Inspect or update scenario metadata only for the active run in an artifact directory')
   .option('--set <scenario>', `Scenario name: ${SCENARIOS.join(', ')}`)
   .option('--sub-scenario <subScenario>', `Sub-scenario name: ${SUB_SCENARIOS.join(', ')}`)
   .option('--input-scope <scope>', 'Optional free-form input scope note for the active run')
@@ -2240,7 +2248,7 @@ program
 
 program
   .command('scenario-check <artifact-path>')
-  .description('Validate required inputs/artifacts for the active scenario and show scenario-specific next steps')
+  .description('Validate required artifacts for the active scenario and show scenario-specific next steps')
   .option('--json', 'Print machine-readable scenario check result JSON')
   .action((artifactPath: string, opts: { json?: boolean }) => {
     const artifactDir = resolveArtifactDirFromInput(artifactPath);
