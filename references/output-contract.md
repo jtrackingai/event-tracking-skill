@@ -28,8 +28,8 @@ At the same time, each write is snapshotted into `versions/<run-id>/...` so hist
 | `tracking-update-change-summary.md` | Business-friendly Tracking Update change summary for stakeholder communication |
 | `tracking-plan-comparison.md` | Human-readable comparison of existing live GTM tracking vs the generated event plan, including optimization points, expected benefits, and legacy issues; generated when `live-gtm-analysis.json` is present |
 | `upkeep-schema-comparison-report.md` | Upkeep schema comparison summary (current recommendation vs baseline schema) |
-| `upkeep-preview-report.md` | Upkeep preview summary focused on failures, drift, and unexpected events |
-| `upkeep-next-step-recommendation.md` | Upkeep recommendation that routes into Tracking Update when needed |
+| `upkeep-preview-report.md` | Upkeep preview summary with `healthy`, `failure`, `drift`, and `not_observable` status buckets |
+| `upkeep-next-step-recommendation.md` | Upkeep recommendation that states whether to enter Tracking Update and whether it is `new_requests`, `legacy_maintenance`, or `both` |
 | `tracking-health-schema-gap-report.md` | Tracking Health Audit schema-vs-live gap report for first-pass health assessment |
 | `tracking-health-preview-report.md` | Tracking Health Audit preview summary (optional preview path noted) |
 | `tracking-health-next-step-recommendation.md` | Tracking Health Audit recommendation, typically suggesting optional move to New Setup |

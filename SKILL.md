@@ -1,6 +1,6 @@
 ---
 name: event-tracking-skill
-description: End-to-end GA4 + GTM tracking skill for site analysis, page grouping, schema design, GTM sync, preview QA, and publish readiness across generic sites and Shopify.
+description: Use when you need end-to-end GA4 + GTM tracking delivery across discovery, schema, sync, and verification phases.
 ---
 
 # Event Tracking Skill

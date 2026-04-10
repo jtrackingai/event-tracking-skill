@@ -467,9 +467,20 @@ test('generate-upkeep-report writes upkeep deliverables', t => {
     baselineFile,
   ]);
   assert.equal(result.status, 0, result.combinedOutput);
-  assert.ok(fs.existsSync(path.join(artifactDir, 'upkeep-schema-comparison-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'upkeep-preview-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'upkeep-next-step-recommendation.md')));
+  const schemaComparisonFile = path.join(artifactDir, 'upkeep-schema-comparison-report.md');
+  const previewFile = path.join(artifactDir, 'upkeep-preview-report.md');
+  const recommendationFile = path.join(artifactDir, 'upkeep-next-step-recommendation.md');
+  assert.ok(fs.existsSync(schemaComparisonFile));
+  assert.ok(fs.existsSync(previewFile));
+  assert.ok(fs.existsSync(recommendationFile));
+  const previewContent = fs.readFileSync(previewFile, 'utf8');
+  const recommendationContent = fs.readFileSync(recommendationFile, 'utf8');
+  assert.match(previewContent, /healthy:/);
+  assert.match(previewContent, /failure:/);
+  assert.match(previewContent, /drift:/);
+  assert.match(previewContent, /not_observable:/);
+  assert.match(recommendationContent, /Tracking Update required: yes/);
+  assert.match(recommendationContent, /Tracking Update type: both/);
 });
 
 test('generate-health-audit-report writes audit deliverables from live GTM baseline', t => {

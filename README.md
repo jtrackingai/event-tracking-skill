@@ -175,8 +175,8 @@ For a brand-new URL with no artifacts yet, `run-new-setup` is a labeled entry po
 # Incremental update for existing tracking
 ./event-tracking run-tracking-update ./output/example_com --baseline-schema ./output/example_com/schema-restore/confirmed-<hash>.json
 
-# Routine upkeep check
-./event-tracking run-upkeep ./output/example_com --baseline-schema ./output/example_com/schema-restore/confirmed-<hash>.json
+# Routine upkeep check (with fresh crawl)
+./event-tracking run-upkeep ./output/example_com --url https://example.com --baseline-schema ./output/example_com/schema-restore/confirmed-<hash>.json
 
 # Audit-only health assessment before deciding rebuild
 ./event-tracking run-health-audit ./output/example_com --live-gtm-analysis ./output/example_com/live-gtm-analysis.json
@@ -299,7 +299,7 @@ Scenario-oriented reporting commands:
 - `./event-tracking scenario-check <artifact-dir> [--json]`
 - `./event-tracking run-new-setup <artifact-dir> [--input-scope ...]`
 - `./event-tracking run-tracking-update <artifact-dir> [--schema-file ...] [--baseline-schema ...]`
-- `./event-tracking run-upkeep <artifact-dir> [--schema-file ...] [--baseline-schema ...] [--health-file ...]`
+- `./event-tracking run-upkeep <artifact-dir> [--url <site-url>] [--schema-file ...] [--baseline-schema ...] [--health-file ...]`
 - `./event-tracking run-health-audit <artifact-dir> [--schema-file ...] [--live-gtm-analysis ...]`
 
 Scenario gate note:

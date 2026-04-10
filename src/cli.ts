@@ -22,7 +22,7 @@ import { validateEventSchema, getQuotaSummary } from './generator/schema-validat
 import { buildSchemaContext } from './generator/schema-context';
 import { buildExistingTrackingBaseline, compareSchemaToLiveTracking } from './generator/live-tracking-insights';
 import { checkSelectors } from './generator/selector-check';
-import { runPreviewVerification, checkGTMOnPage } from './gtm/preview';
+import { PreviewResult, runPreviewVerification, checkGTMOnPage } from './gtm/preview';
 import { generatePreviewReport } from './reporter/preview-report';
 import { generateTrackingPlanComparisonReport } from './reporter/tracking-plan-comparison';
 import { TRACKING_HEALTH_REPORT_FILE, writeTrackingHealthReportMarkdown } from './reporter/tracking-health-report';
@@ -33,7 +33,7 @@ import {
   generateSchemaDiffReportMarkdown,
 } from './reporter/schema-diff';
 import { analyzeLiveGtmContainers, generateLiveGtmReviewMarkdown, LiveGtmAnalysis } from './gtm/live-parser';
-import { isShopifyPlatform } from './crawler/platform-detector';
+import { isShopifyPlatform, makeGenericPlatform } from './crawler/platform-detector';
 import { generateShopifyPixelArtifacts } from './shopify/pixel';
 import { buildShopifyBootstrapArtifacts } from './shopify/schema-template';
 import {
@@ -75,6 +75,10 @@ import {
   writeTrackingHealthHistory,
   writeTrackingHealthReport,
 } from './reporter/tracking-health';
+import {
+  assessUpkeepPreview,
+  decideUpkeepNextStep,
+} from './reporter/upkeep-preview';
 
 const program = new Command();
 
@@ -312,6 +316,61 @@ function summarizeDiffForNextStep(diff: SchemaDiffResult): string {
   return 'No schema differences detected. Keep current tracking or focus on health verification.';
 }
 
+function cloneSchemaAsCurrentRecommendation(baseline: EventSchema, siteUrl: string): EventSchema {
+  return {
+    ...baseline,
+    siteUrl,
+    generatedAt: new Date().toISOString(),
+    events: baseline.events.map(event => ({
+      ...event,
+      parameters: event.parameters.map(parameter => ({ ...parameter })),
+    })),
+  };
+}
+
+function matchUrlsByPattern(urls: string[], pattern: string): string[] {
+  try {
+    const regex = new RegExp(pattern);
+    return urls.filter(url => regex.test(url));
+  } catch {
+    return [];
+  }
+}
+
+function carryForwardPageGroups(args: {
+  analysis: SiteAnalysis;
+  previousAnalysis?: SiteAnalysis | null;
+}): SiteAnalysis {
+  const next = args.analysis;
+  const previousGroups = args.previousAnalysis?.pageGroups || [];
+  if (previousGroups.length === 0) {
+    return next;
+  }
+
+  const discoveredUrls = Array.from(new Set([next.rootUrl, ...next.discoveredUrls]));
+  const inheritedGroups = previousGroups.map(group => {
+    const patternMatches = matchUrlsByPattern(discoveredUrls, group.urlPattern);
+    const exactMatches = group.urls.filter(url => discoveredUrls.includes(url));
+    const urls = Array.from(new Set([...patternMatches, ...exactMatches]));
+    return {
+      ...group,
+      urls,
+    };
+  }).filter(group => group.urls.length > 0);
+
+  if (inheritedGroups.length === 0) {
+    return next;
+  }
+
+  next.pageGroups = inheritedGroups;
+  next.pageGroupsReview = {
+    status: 'confirmed',
+    confirmedAt: new Date().toISOString(),
+    confirmedHash: getPageGroupsHash(inheritedGroups),
+  };
+  return next;
+}
+
 function buildRunsScenarioSummary(entries: Array<{
   scenario: WorkflowScenario;
   subScenario: WorkflowSubScenario;
@@ -458,12 +517,25 @@ function generateUpkeepArtifacts(args: {
   currentSchema: EventSchema;
   baselineSchema: EventSchema;
   healthFile: string;
+  previewResultFile: string;
   schemaComparisonFile: string;
   previewFile: string;
   recommendationFile: string;
 }): SchemaDiffResult {
   const diff = diffEventSchemas(args.currentSchema, args.baselineSchema);
   const health = readTrackingHealthReport(args.healthFile);
+  const previewResult = tryReadJsonFile<PreviewResult>(args.previewResultFile);
+  const previewAssessment = assessUpkeepPreview({
+    currentSchema: args.currentSchema,
+    baselineSchema: args.baselineSchema,
+    diff,
+    health,
+    previewResult: (previewResult || null),
+  });
+  const nextStep = decideUpkeepNextStep({
+    diff,
+    previewAssessment,
+  });
 
   writeArtifactTextFile({
     artifactDir: args.artifactDir,
@@ -481,21 +553,32 @@ function generateUpkeepArtifacts(args: {
     '# Upkeep Preview Report',
     '',
     `**Health source:** ${args.healthFile}`,
+    `**Preview source:** ${args.previewResultFile}`,
+    '',
+    '## Status Summary',
+    '',
+    ...previewAssessment.summaryLines,
+    '',
+    '## Event Status',
+    '',
+    '| Event | Status | Reason |',
+    '| --- | --- | --- |',
   ];
-  if (!health) {
-    previewLines.push('', '- tracking-health.json not found. Run preview before final upkeep decision.');
+  if (previewAssessment.items.length === 0) {
+    previewLines.push('| _none_ | not_observable | No preview-observable events were available. |');
   } else {
-    previewLines.push(
-      '',
-      `- Grade: ${health.grade}`,
-      `- Score: ${formatTrackingHealthScore(health.score)}`,
-      `- Blockers: ${health.blockers.length}`,
-      `- Unexpected events: ${health.unexpectedEventNames.length}`,
-      '',
-      '## Blockers',
-      '',
-      ...(health.blockers.length > 0 ? health.blockers.map(item => `- ${item}`) : ['- none']),
-    );
+    for (const item of previewAssessment.items) {
+      previewLines.push(`| \`${item.eventName}\` | ${item.status} | ${item.reason} |`);
+    }
+  }
+  previewLines.push('');
+  if (!health) {
+    previewLines.push('- tracking-health.json not found. Run preview before final upkeep decision.');
+  } else {
+    previewLines.push(`- Health grade: ${health.grade}`);
+    previewLines.push(`- Health score: ${formatTrackingHealthScore(health.score)}`);
+    previewLines.push(`- Blockers: ${health.blockers.length}`);
+    previewLines.push(`- Unexpected events: ${health.unexpectedEventNames.length}`);
   }
   previewLines.push('', '_Generated by event-tracking-skill_');
   writeArtifactTextFile({
@@ -509,14 +592,15 @@ function generateUpkeepArtifacts(args: {
     '# Upkeep Next Step Recommendation',
     '',
     `- Schema delta: +${diff.added.length} / ~${diff.changed.length} / -${diff.removed.length}`,
-    `- Recommendation: ${summarizeDiffForNextStep(diff)}`,
+    `- Preview status: healthy=${previewAssessment.counts.healthy}, failure=${previewAssessment.counts.failure}, drift=${previewAssessment.counts.drift}, not_observable=${previewAssessment.counts.not_observable}`,
+    `- Tracking Update required: ${nextStep.trackingUpdateRequired ? 'yes' : 'no'}`,
+    `- Tracking Update type: ${nextStep.recommendationType}`,
+    `- Recommendation: ${nextStep.reason}`,
   ];
   if (!health) {
-    recommendationLines.push('- Preview status: missing, run preview to validate drift and failures.');
+    recommendationLines.push('- Preview validation note: tracking-health.json missing; affected events are marked not_observable.');
   } else if (hasBlockingTrackingHealth(health)) {
-    recommendationLines.push('- Preview status: blocking issues found, open Tracking Update and fix blockers first.');
-  } else {
-    recommendationLines.push('- Preview status: non-blocking, proceed with controlled Tracking Update rollout.');
+    recommendationLines.push('- Preview validation note: blocking health issues detected.');
   }
   recommendationLines.push('', '_Generated by event-tracking-skill_');
   writeArtifactTextFile({
@@ -2665,6 +2749,7 @@ program
     const healthFile = opts.healthFile?.trim()
       ? path.resolve(opts.healthFile)
       : path.join(artifactDir, TRACKING_HEALTH_FILE);
+    const previewResultFile = path.join(artifactDir, 'preview-result.json');
 
     const schemaComparisonFile = path.join(artifactDir, 'upkeep-schema-comparison-report.md');
     const previewFile = path.join(artifactDir, 'upkeep-preview-report.md');
@@ -2675,6 +2760,7 @@ program
       currentSchema,
       baselineSchema,
       healthFile,
+      previewResultFile,
       schemaComparisonFile,
       previewFile,
       recommendationFile,
@@ -2850,12 +2936,21 @@ program
 
 program
   .command('run-upkeep <artifact-path>')
-  .description('Scenario template: start Upkeep run and generate upkeep deliverables when inputs are ready')
+  .description('Scenario template: refresh upkeep baseline and generate upkeep deliverables')
+  .option('--url <url>', 'Re-crawl this site URL before upkeep comparison')
+  .option('--urls <list>', `Partial crawl URLs (comma-separated, max ${CRAWL_MAX_PARTIAL_URLS})`)
+  .option(
+    '--storefront-password <password>',
+    'Optional Shopify storefront password when re-crawling a protected storefront',
+  )
   .option('--schema-file <file>', 'Path to current event-schema.json (default: <artifact-dir>/event-schema.json)')
   .option('--baseline-schema <file>', 'Baseline event-schema.json to compare against')
   .option('--health-file <file>', 'Tracking health file used for upkeep preview summary')
   .option('--input-scope <scope>', 'Optional free-form input scope note for this run')
-  .action((artifactPath: string, opts: {
+  .action(async (artifactPath: string, opts: {
+    url?: string;
+    urls?: string;
+    storefrontPassword?: string;
     schemaFile?: string;
     baselineSchema?: string;
     healthFile?: string;
@@ -2878,18 +2973,6 @@ program
       inputScope,
     });
 
-    const schemaFile = opts.schemaFile?.trim()
-      ? path.resolve(opts.schemaFile)
-      : path.join(artifactDir, 'event-schema.json');
-    if (!fs.existsSync(schemaFile)) {
-      console.log(`\n⚠️  Upkeep run started, but ${schemaFile} is missing.`);
-      const next = suggestScenarioNextCommand(artifactDir, 'upkeep');
-      if (next) {
-        console.log(`   Next step: ${next}`);
-      }
-      return;
-    }
-
     const baselineFile = opts.baselineSchema?.trim()
       ? path.resolve(opts.baselineSchema)
       : findLatestSchemaSnapshot(artifactDir);
@@ -2898,12 +2981,103 @@ program
       console.log('   Provide --baseline-schema <file>, or confirm a previous schema first.');
       return;
     }
+    const baselineSchema = readJsonFile<EventSchema>(baselineFile);
+
+    const analysisFile = path.join(artifactDir, 'site-analysis.json');
+    const previousAnalysis = tryReadJsonFile<SiteAnalysis>(analysisFile);
+    let siteAnalysis = previousAnalysis;
+
+    const recrawlUrl = opts.url?.trim();
+    if (recrawlUrl) {
+      const partialUrls = opts.urls
+        ? opts.urls.split(',').map(value => value.trim()).filter(Boolean)
+        : [];
+      if (partialUrls.length > CRAWL_MAX_PARTIAL_URLS) {
+        console.error(`\n❌ Partial crawl URLs exceed limit (${CRAWL_MAX_PARTIAL_URLS}).`);
+        process.exit(1);
+      }
+      const storefrontPassword = opts.storefrontPassword?.trim() || process.env.SHOPIFY_STOREFRONT_PASSWORD?.trim();
+      let recrawled: SiteAnalysis;
+      try {
+        recrawled = await analyzeSite(
+          recrawlUrl,
+          partialUrls.length > 0
+            ? { mode: 'partial', urls: partialUrls, storefrontPassword }
+            : { mode: 'full', storefrontPassword },
+        );
+      } catch (error) {
+        console.error(`\n❌ Failed to re-crawl site during upkeep: ${(error as Error).message}`);
+        process.exit(1);
+      }
+      siteAnalysis = carryForwardPageGroups({
+        analysis: recrawled,
+        previousAnalysis,
+      });
+      writeArtifactJsonFile({
+        artifactDir,
+        file: analysisFile,
+        value: siteAnalysis,
+        stage: 'upkeep_reanalyze',
+      });
+      refreshAndIndexWorkflowState(artifactDir, undefined, {
+        siteUrl: siteAnalysis.rootUrl,
+        scenario: 'upkeep',
+      });
+    } else if (siteAnalysis) {
+      writeArtifactJsonFile({
+        artifactDir,
+        file: analysisFile,
+        value: siteAnalysis,
+        stage: 'upkeep_refresh',
+      });
+    }
+
+    if (!siteAnalysis) {
+      siteAnalysis = {
+        rootUrl: baselineSchema.siteUrl,
+        rootDomain: (() => {
+          try {
+            return new URL(baselineSchema.siteUrl).hostname;
+          } catch {
+            return '';
+          }
+        })(),
+        platform: makeGenericPlatform(),
+        pages: [],
+        pageGroups: [],
+        discoveredUrls: [],
+        skippedUrls: [],
+        crawlWarnings: [
+          'Upkeep run created a placeholder site-analysis.json because no current analysis was available.',
+        ],
+        dataLayerEvents: [],
+        gtmPublicIds: [],
+      };
+      writeArtifactJsonFile({
+        artifactDir,
+        file: analysisFile,
+        value: siteAnalysis,
+        stage: 'upkeep_refresh',
+      });
+    }
+
+    const schemaFile = opts.schemaFile?.trim()
+      ? path.resolve(opts.schemaFile)
+      : path.join(artifactDir, 'event-schema.json');
+    const currentSchema = fs.existsSync(schemaFile)
+      ? readJsonFile<EventSchema>(schemaFile)
+      : cloneSchemaAsCurrentRecommendation(baselineSchema, siteAnalysis.rootUrl);
+    writeArtifactJsonFile({
+      artifactDir,
+      file: schemaFile,
+      value: currentSchema,
+      stage: 'upkeep_refresh',
+    });
 
     const healthFile = opts.healthFile?.trim()
       ? path.resolve(opts.healthFile)
       : path.join(artifactDir, TRACKING_HEALTH_FILE);
-    const currentSchema = readJsonFile<EventSchema>(schemaFile);
-    const baselineSchema = readJsonFile<EventSchema>(baselineFile);
+    const previewResultFile = path.join(artifactDir, 'preview-result.json');
     const schemaComparisonFile = path.join(artifactDir, 'upkeep-schema-comparison-report.md');
     const previewFile = path.join(artifactDir, 'upkeep-preview-report.md');
     const recommendationFile = path.join(artifactDir, 'upkeep-next-step-recommendation.md');
@@ -2912,13 +3086,21 @@ program
       currentSchema,
       baselineSchema,
       healthFile,
+      previewResultFile,
       schemaComparisonFile,
       previewFile,
       recommendationFile,
     });
+    refreshAndIndexWorkflowState(artifactDir, undefined, {
+      siteUrl: siteAnalysis.rootUrl,
+      scenario: 'upkeep',
+    });
 
     console.log(`\n✅ Upkeep template completed.`);
     console.log(`   Scenario: upkeep`);
+    console.log(`   Site analysis: ${analysisFile}`);
+    console.log(`   Current schema: ${schemaFile}`);
+    console.log(`   Baseline schema: ${baselineFile}`);
     console.log(`   Schema comparison: ${schemaComparisonFile}`);
     console.log(`   Preview summary: ${previewFile}`);
     console.log(`   Recommendation: ${recommendationFile}`);
