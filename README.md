@@ -179,7 +179,7 @@ For a brand-new URL with no artifacts yet, `run-new-setup` is a labeled entry po
 ./event-tracking run-upkeep ./output/example_com --url https://example.com --baseline-schema ./output/example_com/schema-restore/confirmed-<hash>.json
 
 # Audit-only health assessment before deciding rebuild
-./event-tracking run-health-audit ./output/example_com --live-gtm-analysis ./output/example_com/live-gtm-analysis.json
+./event-tracking run-health-audit ./output/example_com --url https://example.com
 ```
 
 Use these helpers when needed:
@@ -192,6 +192,7 @@ Use these helpers when needed:
 Scenario guardrails:
 
 - `tracking_health_audit` is audit-only. `generate-gtm`, `sync`, and `publish` are blocked by default unless explicitly forced.
+- `run-health-audit` is crawl-first and assessment-only: it generates `site-analysis.json`, candidate `event-schema.json`, and health-audit reports, but does not generate `gtm-config.json`.
 - Scenario report commands are intent-gated (for example, upkeep report commands require `upkeep`).
 - `scenario-check` is a readiness check for the current scenario contract; use `status` when you need checkpoint, warning, and gate details.
 
@@ -300,7 +301,7 @@ Scenario-oriented reporting commands:
 - `./event-tracking run-new-setup <artifact-dir> [--input-scope ...]`
 - `./event-tracking run-tracking-update <artifact-dir> [--schema-file ...] [--baseline-schema ...]`
 - `./event-tracking run-upkeep <artifact-dir> [--url <site-url>] [--schema-file ...] [--baseline-schema ...] [--health-file ...]`
-- `./event-tracking run-health-audit <artifact-dir> [--schema-file ...] [--live-gtm-analysis ...]`
+- `./event-tracking run-health-audit <artifact-dir> [--url <site-url>] [--urls <partial-list>] [--gtm-id ...] [--primary-container-id ...]`
 
 Scenario gate note:
 

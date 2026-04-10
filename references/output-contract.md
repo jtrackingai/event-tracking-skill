@@ -30,9 +30,9 @@ At the same time, each write is snapshotted into `versions/<run-id>/...` so hist
 | `upkeep-schema-comparison-report.md` | Upkeep schema comparison summary (current recommendation vs baseline schema) |
 | `upkeep-preview-report.md` | Upkeep preview summary with `healthy`, `failure`, `drift`, and `not_observable` status buckets |
 | `upkeep-next-step-recommendation.md` | Upkeep recommendation that states whether to enter Tracking Update and whether it is `new_requests`, `legacy_maintenance`, or `both` |
-| `tracking-health-schema-gap-report.md` | Tracking Health Audit schema-vs-live gap report for first-pass health assessment |
-| `tracking-health-preview-report.md` | Tracking Health Audit preview summary (optional preview path noted) |
-| `tracking-health-next-step-recommendation.md` | Tracking Health Audit recommendation, typically suggesting optional move to New Setup |
+| `tracking-health-schema-gap-report.md` | Tracking Health Audit schema-vs-live gap report with `missing_event`, `missing_parameter`, `weak_naming`, `partial_coverage`, and `high_value_page_gap` classifications |
+| `tracking-health-preview-report.md` | Tracking Health Audit preview/validation summary with `healthy`, `failure`, and `not_observable` classifications |
+| `tracking-health-next-step-recommendation.md` | Tracking Health Audit recommendation with explicit `Enter New Setup: yes/no` decision |
 | `schema-decisions.jsonl` | Append-only schema confirmation audit, including added, changed, removed, and unchanged events compared with the previous confirmed snapshot when available |
 | `schema-restore/` | Restore snapshots of confirmed `event-schema.json` versions, keyed by schema hash |
 | `.event-tracking-run.json` | Run-context metadata for output-root recovery and run indexing |
@@ -92,6 +92,7 @@ If `site-analysis.json` detected real GTM public IDs, run `./event-tracking anal
 - Use scenario template commands when you want scenario-oriented guidance/execution under a new scenario run: `run-new-setup`, `run-tracking-update`, `run-upkeep`, `run-health-audit`
 - Scenario check requirements are configurable in `src/workflow/scenario-requirements.json`
 - In scenario `tracking_health_audit`, deployment commands (`generate-gtm`, `sync`, `publish`) are blocked by default because this scenario is audit-only
+- `run-health-audit` should not produce `gtm-config.json`; this scenario is assessment-only
 - Reporting commands are also scenario-gated (for example `generate-upkeep-report` is intended for `upkeep`, and `generate-health-audit-report` is intended for `tracking_health_audit`)
 
 ## Directory Example

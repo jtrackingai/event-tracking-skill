@@ -502,9 +502,24 @@ test('generate-health-audit-report writes audit deliverables from live GTM basel
     liveFile,
   ]);
   assert.equal(result.status, 0, result.combinedOutput);
-  assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-schema-gap-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-preview-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-next-step-recommendation.md')));
+  const schemaGapFile = path.join(artifactDir, 'tracking-health-schema-gap-report.md');
+  const previewFile = path.join(artifactDir, 'tracking-health-preview-report.md');
+  const recommendationFile = path.join(artifactDir, 'tracking-health-next-step-recommendation.md');
+  assert.ok(fs.existsSync(schemaGapFile));
+  assert.ok(fs.existsSync(previewFile));
+  assert.ok(fs.existsSync(recommendationFile));
+  const schemaGapContent = fs.readFileSync(schemaGapFile, 'utf8');
+  const previewContent = fs.readFileSync(previewFile, 'utf8');
+  const recommendationContent = fs.readFileSync(recommendationFile, 'utf8');
+  assert.match(schemaGapContent, /missing_event:/);
+  assert.match(schemaGapContent, /missing_parameter:/);
+  assert.match(schemaGapContent, /weak_naming:/);
+  assert.match(schemaGapContent, /partial_coverage:/);
+  assert.match(schemaGapContent, /high_value_page_gap:/);
+  assert.match(previewContent, /healthy:/);
+  assert.match(previewContent, /failure:/);
+  assert.match(previewContent, /not_observable:/);
+  assert.match(recommendationContent, /Enter New Setup:/);
 });
 
 test('tracking_health_audit scenario blocks generate-gtm unless force is used', t => {
@@ -675,8 +690,6 @@ test('run-health-audit template starts scenario and writes audit deliverables', 
     artifactDir,
     '--schema-file',
     schemaFile,
-    '--live-gtm-analysis',
-    liveFile,
   ]);
   assert.equal(result.status, 0, result.combinedOutput);
   assert.match(result.combinedOutput, /Tracking Health Audit template completed/);
@@ -686,6 +699,7 @@ test('run-health-audit template starts scenario and writes audit deliverables', 
   assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-schema-gap-report.md')));
   assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-preview-report.md')));
   assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-next-step-recommendation.md')));
+  assert.ok(!fs.existsSync(path.join(artifactDir, 'gtm-config.json')));
 });
 
 test('scenario requirements are loaded from configurable mapping', () => {
