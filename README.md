@@ -115,7 +115,7 @@ Use event-tracking-skill to do an upkeep review for this existing run:
 Tell me what is still healthy, what drifted, and what needs repair.
 ```
 
-Resume an existing artifact:
+Update an existing artifact:
 
 ```text
 Use event-tracking-skill to resume this artifact directory:
