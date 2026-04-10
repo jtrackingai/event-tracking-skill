@@ -38,6 +38,11 @@ const {
 } = require(path.join(repoRoot, 'dist', 'workflow', 'scenario-transition.js'));
 const { refreshWorkflowState } = require(path.join(repoRoot, 'dist', 'workflow', 'state.js'));
 const { getPageGroupsHash } = require(path.join(repoRoot, 'dist', 'crawler', 'page-analyzer.js'));
+const {
+  buildLiveVerificationSchema,
+  LIVE_PREVIEW_RESULT_FILE,
+  LIVE_TRACKING_HEALTH_FILE,
+} = require(path.join(repoRoot, 'dist', 'gtm', 'live-verifier.js'));
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'event-tracking-workflow-enhancements-'));
@@ -493,6 +498,46 @@ test('generate-upkeep-report writes upkeep deliverables', t => {
   assert.match(recommendationContent, /Tracking Update type: both/);
 });
 
+test('generate-upkeep-report falls back to live GTM verification evidence when tracking-health.json is missing', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const baselineFile = path.join(artifactDir, 'baseline-event-schema.json');
+  const currentFile = path.join(artifactDir, 'event-schema.json');
+  writeJson(baselineFile, makeEventSchema([makeEvent('signup_click')]));
+  writeJson(currentFile, makeEventSchema([makeEvent('signup_click')]));
+  writeJson(path.join(artifactDir, LIVE_TRACKING_HEALTH_FILE), makeTrackingHealthReport({
+    grade: 'good',
+    score: 88,
+    blockers: [],
+    eventStatus: [
+      { eventName: 'signup_click', fired: true, priority: 'high' },
+    ],
+  }));
+  writeJson(path.join(artifactDir, LIVE_PREVIEW_RESULT_FILE), {
+    siteUrl: 'https://example.com',
+    previewStartedAt: '2026-04-08T00:00:00.000Z',
+    previewEndedAt: '2026-04-08T00:01:00.000Z',
+    gtmContainerId: 'GTM-TEST123',
+    results: [],
+    totalSchemaEvents: 1,
+    totalExpected: 1,
+    totalFired: 1,
+    totalFailed: 0,
+    redundantAutoEventsSkipped: 0,
+    unexpectedFiredEvents: [],
+  });
+
+  const result = runCli([
+    'generate-upkeep-report',
+    currentFile,
+    '--baseline-schema',
+    baselineFile,
+  ]);
+  assert.equal(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, /Formal live GTM verification verdict available/);
+});
+
 test('generate-health-audit-report writes audit deliverables from live GTM baseline', t => {
   const artifactDir = makeTempDir();
   t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
@@ -538,6 +583,82 @@ test('generate-health-audit-report writes audit deliverables from live GTM basel
   assert.match(previewContent, /failure:/);
   assert.match(previewContent, /not_observable:/);
   assert.match(recommendationContent, /Enter New Setup:/);
+});
+
+test('generate-health-audit-report uses live GTM verification evidence when available', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const schemaFile = path.join(artifactDir, 'event-schema.json');
+  const liveFile = path.join(artifactDir, 'live-gtm-analysis.json');
+  writeJson(schemaFile, makeEventSchema([
+    makeEvent('signup_click'),
+    makeEvent('pricing_click', { priority: 'medium' }),
+  ]));
+  writeJson(liveFile, makeLiveGtmAnalysis());
+  writeJson(path.join(artifactDir, LIVE_TRACKING_HEALTH_FILE), makeTrackingHealthReport({
+    grade: 'good',
+    score: 84,
+    blockers: [],
+    eventStatus: [
+      { eventName: 'signup_click', fired: true, priority: 'high' },
+      { eventName: 'pricing_click', fired: false, priority: 'medium', failureCategory: 'selector_mismatch' },
+    ],
+  }));
+  writeJson(path.join(artifactDir, LIVE_PREVIEW_RESULT_FILE), {
+    siteUrl: 'https://example.com',
+    previewStartedAt: '2026-04-08T00:00:00.000Z',
+    previewEndedAt: '2026-04-08T00:01:00.000Z',
+    gtmContainerId: 'GTM-TEST123',
+    results: [],
+    totalSchemaEvents: 2,
+    totalExpected: 2,
+    totalFired: 1,
+    totalFailed: 1,
+    redundantAutoEventsSkipped: 0,
+    unexpectedFiredEvents: [],
+  });
+
+  const result = runCli([
+    'generate-health-audit-report',
+    schemaFile,
+    '--live-gtm-analysis',
+    liveFile,
+  ]);
+  assert.equal(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, /formal live GTM verification run/);
+  assert.match(result.combinedOutput, /verified in live GTM verification/);
+});
+
+test('buildLiveVerificationSchema keeps automation-friendly live events and skips opaque ones', () => {
+  const build = buildLiveVerificationSchema(makeLiveGtmAnalysis({
+    aggregatedEvents: [
+      {
+        eventName: 'signup_click',
+        containers: ['GTM-TEST123'],
+        measurementIds: ['G-TEST1234'],
+        parameterNames: ['link_text'],
+        triggerTypes: ['click'],
+        selectors: ['button.signup'],
+        urlPatterns: ['^/$'],
+        confidence: 'high',
+      },
+      {
+        eventName: 'opaque_custom_event',
+        containers: ['GTM-TEST123'],
+        measurementIds: ['G-TEST1234'],
+        parameterNames: ['value'],
+        triggerTypes: ['custom'],
+        selectors: [],
+        urlPatterns: [],
+        confidence: 'low',
+      },
+    ],
+  }));
+
+  assert.deepEqual(build.includedEvents, ['signup_click']);
+  assert.equal(build.schema.events[0].triggerType, 'click');
+  assert.equal(build.skippedEvents[0].eventName, 'opaque_custom_event');
 });
 
 test('tracking_health_audit scenario blocks generate-gtm unless force is used', t => {

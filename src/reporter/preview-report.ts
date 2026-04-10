@@ -3,6 +3,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { buildTrackingHealthReport, formatTrackingHealthScore } from './tracking-health';
 
+interface PreviewReportOptions {
+  title?: string;
+  startedLabel?: string;
+  endedLabel?: string;
+  manualVerificationLabel?: string;
+}
+
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString();
 }
@@ -54,7 +61,7 @@ function formatParameters(params: Record<string, string>): string {
   return relevantParams.map(([k, v]) => `\`${k}=${v}\``).join(', ');
 }
 
-export function generatePreviewReport(result: PreviewResult, outputPath?: string): string {
+export function generatePreviewReport(result: PreviewResult, outputPath?: string, opts: PreviewReportOptions = {}): string {
   const trackingHealth = buildTrackingHealthReport(result);
   const totalSchemaEvents = typeof result.totalSchemaEvents === 'number' ? result.totalSchemaEvents : result.totalExpected;
   const redundantAutoEventsSkipped =
@@ -83,12 +90,12 @@ export function generatePreviewReport(result: PreviewResult, outputPath?: string
     : 0;
 
   const lines: string[] = [
-    `# GTM Preview Report`,
+    `# ${opts.title || 'GTM Preview Report'}`,
     ``,
     `**Site:** ${result.siteUrl}`,
     `**Container:** ${result.gtmContainerId}`,
-    `**Preview Started:** ${formatDateTime(result.previewStartedAt)}`,
-    `**Preview Ended:** ${formatDateTime(result.previewEndedAt)}`,
+    `**${opts.startedLabel || 'Preview Started'}:** ${formatDateTime(result.previewStartedAt)}`,
+    `**${opts.endedLabel || 'Preview Ended'}:** ${formatDateTime(result.previewEndedAt)}`,
     ``,
     `---`,
     ``,
@@ -244,7 +251,7 @@ export function generatePreviewReport(result: PreviewResult, outputPath?: string
   }
 
   if (firingRate < 100) {
-    lines.push('4. **Manual verification:** After fixing issues, re-run preview or manually verify in GTM Tag Assistant.');
+    lines.push(`4. **Manual verification:** ${opts.manualVerificationLabel || 'After fixing issues, re-run preview or manually verify in GTM Tag Assistant.'}`);
     lines.push('');
   }
 

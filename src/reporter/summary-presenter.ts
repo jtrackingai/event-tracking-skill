@@ -108,11 +108,19 @@ function getHealthStatusMap(health: TrackingHealthReport | null): Map<string, Tr
 function formatEvidenceLabel(args: {
   eventName: string;
   health: TrackingHealthReport | null;
+  evidenceSource?: 'tracking_health' | 'live_tracking_health' | 'none';
 }): string {
   if (!args.health) return 'none in this audit run';
   const status = getHealthStatusMap(args.health).get(args.eventName);
   if (!status) return 'no matching preview record';
-  return status.fired ? 'verified in preview' : `preview run exists, but marked ${status.failureCategory || 'failed'}`;
+  if (status.fired) {
+    return args.evidenceSource === 'live_tracking_health'
+      ? 'verified in live GTM verification'
+      : 'verified in preview';
+  }
+  return args.evidenceSource === 'live_tracking_health'
+    ? `live GTM verification exists, but marked ${status.failureCategory || 'failed'}`
+    : `preview run exists, but marked ${status.failureCategory || 'failed'}`;
 }
 
 function formatAuditVerdict(args: {
@@ -144,6 +152,7 @@ function formatAuditVerdict(args: {
 function explainEvidenceState(args: {
   health: TrackingHealthReport | null;
   currentSchema: EventSchema;
+  evidenceSource?: 'tracking_health' | 'live_tracking_health' | 'none';
 }): {
   label: string;
   stale: boolean;
@@ -170,7 +179,7 @@ function explainEvidenceState(args: {
   return {
     label: 'current',
     stale: false,
-    summary: `Formal tracking-health verdict available (${args.health.grade}, generated ${args.health.generatedAt}).`,
+    summary: `Formal ${args.evidenceSource === 'live_tracking_health' ? 'live GTM verification' : 'tracking-health'} verdict available (${args.health.grade}, generated ${args.health.generatedAt}).`,
   };
 }
 
@@ -343,6 +352,7 @@ export function renderAuditSummary(args: {
   recommendation: HealthAuditRecommendation;
   health: TrackingHealthReport | null;
   previewResult?: PreviewResult | null;
+  evidenceSource?: 'tracking_health' | 'live_tracking_health' | 'none';
 }): string {
   const schemaEventMap = getEventMap(args.schema);
   const liveEventNames = args.baseline.events.map(event => event.eventName);
@@ -369,7 +379,7 @@ export function renderAuditSummary(args: {
     ? 'Answer: the live setup has enough high-risk gaps that a rebuild path is safer than patching individual tags.'
     : 'Answer: the live setup looks repairable, so a targeted tracking upgrade path is reasonable before any rebuild decision.';
   const previewEvidenceLine = args.health
-    ? `Preview-verified automation evidence exists for ${args.health.eventStatus.length} event(s) from a formal preview run.`
+    ? `Preview-verified automation evidence exists for ${args.health.eventStatus.length} event(s) from a formal ${args.evidenceSource === 'live_tracking_health' ? 'live GTM verification run' : 'preview run'}.`
     : 'Current audit run has no formal preview-verified automation evidence; this summary is based on live runtime inspection plus schema-gap analysis.';
 
   const lines: string[] = [
@@ -393,7 +403,7 @@ export function renderAuditSummary(args: {
         return [
           code(event.eventName),
           'yes',
-          formatEvidenceLabel({ eventName: event.eventName, health: args.health }),
+          formatEvidenceLabel({ eventName: event.eventName, health: args.health, evidenceSource: args.evidenceSource }),
           verdict.verdict,
           verdict.reason,
         ];
@@ -430,10 +440,12 @@ export function renderUpkeepSummary(args: {
   nextStep: UpkeepNextStepRecommendation;
   health: TrackingHealthReport | null;
   previewResult?: PreviewResult | null;
+  evidenceSource?: 'tracking_health' | 'live_tracking_health' | 'none';
 }): string {
   const evidenceState = explainEvidenceState({
     health: args.health,
     currentSchema: args.currentSchema,
+    evidenceSource: args.evidenceSource,
   });
   const healthyCount = args.previewAssessment.items.filter(item => item.status === 'healthy').length;
   const brokenCount = args.previewAssessment.items.filter(item => item.status === 'failure').length;

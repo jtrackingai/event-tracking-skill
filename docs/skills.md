@@ -81,6 +81,12 @@ For `tracking_health_audit`, the closeout should clearly separate:
 - runtime-detected live definitions
 - formal preview-verified automation evidence
 
+If the user wants to test the already-published GTM setup on the real site, this skill also owns:
+
+- `verify-live-gtm`
+- published live firing evidence
+- live GTM quality checks without GTM workspace preview mode
+
 ### `tracking-schema`
 
 Use this when the user wants event design or event-plan review.

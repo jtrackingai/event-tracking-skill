@@ -28,11 +28,18 @@ If multiple live containers matter and the user already knows the primary compar
 ./event-tracking analyze-live-gtm <artifact-dir>/site-analysis.json --primary-container-id GTM-XXXXXXX
 ```
 
+If the user wants to test the quality of the already-published live GTM setup on the real site, run:
+
+```bash
+./event-tracking verify-live-gtm <artifact-dir>/site-analysis.json
+```
+
 During review:
 
 - show all detected live GTM containers
 - explain which container is the primary comparison baseline
 - summarize existing live events, measurement IDs, and obvious issues
+- when `verify-live-gtm` was run, separate parsed live definitions from browser-verified live firing evidence
 - if this review is part of `tracking_health_audit`, clearly separate runtime-detected live definitions from any formal preview-verified automation evidence
 - stop before schema authoring if the user wants to review the live baseline first
 
@@ -42,6 +49,9 @@ Produce and share:
 
 - `<artifact-dir>/live-gtm-analysis.json`
 - `<artifact-dir>/live-gtm-review.md`
+- optional `<artifact-dir>/live-preview-result.json`
+- optional `<artifact-dir>/live-preview-report.md`
+- optional `<artifact-dir>/live-tracking-health.json`
 - updated `<artifact-dir>/workflow-state.json`
 
 ## Closeout Style

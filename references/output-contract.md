@@ -19,6 +19,9 @@ At the same time, each write is snapshotted into `versions/<run-id>/...` so hist
 | `site-analysis.json` | Raw page structure from Playwright crawl — pages, interactive elements, page groups, and page-group confirmation metadata |
 | `live-gtm-analysis.json` | Parsed summary of the site's real public GTM runtime, including existing live events, parameters, trigger hints, and the primary comparison container |
 | `live-gtm-review.md` | Human-readable audit of the live GTM baseline and container comparison |
+| `live-preview-result.json` | Raw published-live verification intercept data captured from the site's existing GTM setup, including unexpected fired events outside the parsed live-event baseline |
+| `live-preview-report.md` | Human-readable published-live verification report for existing GTM tags |
+| `live-tracking-health.json` | Machine-readable health verdict for published-live GTM verification; kept separate from workspace/schema preview health |
 | `schema-context.json` | Compressed crawl data for AI event generation (auto-generated, do not edit) |
 | `shopify-schema-template.json` | Shopify-only baseline event schema template generated during `prepare-schema`; use as the starting point for ecommerce custom events |
 | `shopify-bootstrap-review.md` | Shopify-only human-readable review of baseline and inferred bootstrap events, including why each one was included and whether it should be kept, reviewed manually, or removed |
@@ -82,6 +85,7 @@ If `site-analysis.json` detected real GTM public IDs, run `./event-tracking anal
 - Re-run `confirm-schema` after editing `event-schema.json`
 - Re-run `sync` to push a corrected config. Stale `[JTracking]` managed entities are cleaned automatically.
 - Re-run `preview` after sync to re-verify
+- Run `./event-tracking verify-live-gtm <artifact-dir>/site-analysis.json` when you want best-effort verification of the currently published GTM setup without entering GTM workspace preview mode
 - Use `./event-tracking preview ... --baseline <previous-tracking-health.json>` to compare a new preview run with an older tracking health baseline. If omitted, an existing `tracking-health.json` in the same artifact directory is used as the baseline before it is overwritten.
 - `publish` now requires a current non-blocking `tracking-health.json`; use `--force` only when you intentionally want to override a missing or blocked verification state.
 - For Shopify sites, re-install `shopify-custom-pixel.js` after re-syncing to a different GTM container
@@ -104,6 +108,9 @@ Example:
   site-analysis.json
   live-gtm-analysis.json
   live-gtm-review.md
+  live-preview-result.json
+  live-preview-report.md
+  live-tracking-health.json
   event-schema.json
   event-schema-diff-report.md
   tracking-update-change-summary.md

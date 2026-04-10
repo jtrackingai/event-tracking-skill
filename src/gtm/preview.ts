@@ -40,6 +40,15 @@ export interface PreviewResult {
   unexpectedFiredEvents: FiredEvent[];
 }
 
+interface BrowserVerificationArgs {
+  siteAnalysis: SiteAnalysis;
+  schema: EventSchema;
+  gtmPublicId: string;
+  startedAt?: string;
+  gtmScriptUrl?: string | null;
+  mapPageUrl?: (url: string) => string;
+}
+
 function parseGA4Payload(body: string): Record<string, string> {
   const params: Record<string, string> = {};
   try {
@@ -316,48 +325,18 @@ async function fillNearbyInputsForSelector(page: Page, selector: string): Promis
   return 0;
 }
 
-export async function runPreviewVerification(
-  siteAnalysis: SiteAnalysis,
-  schema: EventSchema,
-  client: GTMClient,
-  accountId: string,
-  containerId: string,
-  workspaceId: string,
-  gtmPublicId: string, // GTM-XXXXXX
-  injectGTM: boolean = false
-): Promise<PreviewResult> {
-  const startedAt = new Date().toISOString();
+async function runBrowserVerification(args: BrowserVerificationArgs): Promise<PreviewResult> {
+  const startedAt = args.startedAt || new Date().toISOString();
+  const mapPageUrl = args.mapPageUrl || ((url: string) => url);
+  const gtmScriptUrl = args.gtmScriptUrl || null;
+  const gtmPublicId = args.gtmPublicId;
+  const siteAnalysis = args.siteAnalysis;
+  const schema = args.schema;
   const managedEvents = schema.events.filter(event => !isRedundantAutoEvent(event));
   const shouldSimulateScroll = managedEvents.some(event => event.triggerType === 'scroll');
 
-  // Enable GTM preview mode
-  console.log('  Enabling GTM Quick Preview...');
-  await client.quickPreview(accountId, containerId, workspaceId);
-
-  // Get preview environment auth params for client-side GTM preview URL injection
-  let previewUrlParams: string | null = null;
-  if (injectGTM) {
-    console.log('  Fetching GTM preview environment token...');
-    const previewEnv = await client.getPreviewEnvironment(accountId, containerId, workspaceId);
-    if (previewEnv) {
-      previewUrlParams = `gtm_preview=${previewEnv.gtmPreview}&gtm_auth=${previewEnv.gtmAuth}`;
-      console.log(`  ✅ Preview env: ${previewEnv.gtmPreview}`);
-    } else {
-      console.log(`  ⚠️  No preview environment found — injecting GTM without preview params (will load published version only)`);
-    }
-  }
-
   const allFiredEvents: FiredEvent[] = [];
   const browser: Browser = await chromium.launch({ headless: true });
-
-  // Build GTM script URL (with or without preview params)
-  let gtmScriptUrl: string | null = null;
-  if (injectGTM && gtmPublicId && gtmPublicId !== 'UNKNOWN') {
-    gtmScriptUrl = previewUrlParams
-      ? `https://www.googletagmanager.com/gtm.js?id=${gtmPublicId}&${previewUrlParams}`
-      : `https://www.googletagmanager.com/gtm.js?id=${gtmPublicId}`;
-    console.log(`  💉 GTM container ${gtmPublicId} will be injected per-page${previewUrlParams ? ' (with preview params)' : ''}...`);
-  }
 
   try {
     const context: BrowserContext = await browser.newContext({
@@ -401,20 +380,13 @@ export async function runPreviewVerification(
       await route.continue().catch(() => {});
     });
 
-    // Helper: append GTM preview URL params when injecting GTM so the workspace version loads
-    function buildPageUrl(originalUrl: string): string {
-      if (!injectGTM || !previewUrlParams) return originalUrl;
-      const separator = originalUrl.includes('?') ? '&' : '?';
-      return `${originalUrl}${separator}${previewUrlParams}`;
-    }
-
     // Visit each page and simulate interactions
     for (const pageAnalysis of siteAnalysis.pages) {
       const page = await context.newPage();
       console.log(`  Verifying: ${pageAnalysis.url}`);
 
       try {
-        await page.goto(buildPageUrl(pageAnalysis.url), { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(mapPageUrl(pageAnalysis.url), { waitUntil: 'domcontentloaded', timeout: 30000 });
         if (page.isClosed()) continue;
         console.log(`    [page loaded]`);
 
@@ -462,7 +434,7 @@ export async function runPreviewVerification(
         await page.route('**', blockNav);
         page.setDefaultNavigationTimeout(10000);
 
-        const originalPageUrl = buildPageUrl(pageAnalysis.url);
+        const originalPageUrl = mapPageUrl(pageAnalysis.url);
         const clickableElements = pageAnalysis.elements.filter(e =>
           e.isVisible &&
           (e.type === 'button' || e.type === 'link') &&
@@ -603,5 +575,72 @@ export async function runPreviewVerification(
     totalFailed,
     redundantAutoEventsSkipped: schema.events.length - managedEvents.length,
     unexpectedFiredEvents: unexpectedFired,
+    };
+  }
+
+export async function runPreviewVerification(
+  siteAnalysis: SiteAnalysis,
+  schema: EventSchema,
+  client: GTMClient,
+  accountId: string,
+  containerId: string,
+  workspaceId: string,
+  gtmPublicId: string, // GTM-XXXXXX
+  injectGTM: boolean = false
+): Promise<PreviewResult> {
+  const startedAt = new Date().toISOString();
+
+  // Enable GTM preview mode
+  console.log('  Enabling GTM Quick Preview...');
+  await client.quickPreview(accountId, containerId, workspaceId);
+
+  // Get preview environment auth params for client-side GTM preview URL injection
+  let previewUrlParams: string | null = null;
+  if (injectGTM) {
+    console.log('  Fetching GTM preview environment token...');
+    const previewEnv = await client.getPreviewEnvironment(accountId, containerId, workspaceId);
+    if (previewEnv) {
+      previewUrlParams = `gtm_preview=${previewEnv.gtmPreview}&gtm_auth=${previewEnv.gtmAuth}`;
+      console.log(`  ✅ Preview env: ${previewEnv.gtmPreview}`);
+    } else {
+      console.log(`  ⚠️  No preview environment found — injecting GTM without preview params (will load published version only)`);
+    }
+  }
+
+  let gtmScriptUrl: string | null = null;
+  if (injectGTM && gtmPublicId && gtmPublicId !== 'UNKNOWN') {
+    gtmScriptUrl = previewUrlParams
+      ? `https://www.googletagmanager.com/gtm.js?id=${gtmPublicId}&${previewUrlParams}`
+      : `https://www.googletagmanager.com/gtm.js?id=${gtmPublicId}`;
+    console.log(`  💉 GTM container ${gtmPublicId} will be injected per-page${previewUrlParams ? ' (with preview params)' : ''}...`);
+  }
+
+  const mapPageUrl = (originalUrl: string) => {
+    if (!injectGTM || !previewUrlParams) return originalUrl;
+    const separator = originalUrl.includes('?') ? '&' : '?';
+    return `${originalUrl}${separator}${previewUrlParams}`;
   };
+
+  return runBrowserVerification({
+    siteAnalysis,
+    schema,
+    gtmPublicId,
+    startedAt,
+    gtmScriptUrl,
+    mapPageUrl,
+  });
+}
+
+export async function runLiveVerification(
+  siteAnalysis: SiteAnalysis,
+  schema: EventSchema,
+  gtmPublicId: string,
+): Promise<PreviewResult> {
+  return runBrowserVerification({
+    siteAnalysis,
+    schema,
+    gtmPublicId,
+    startedAt: new Date().toISOString(),
+    gtmScriptUrl: null,
+  });
 }
