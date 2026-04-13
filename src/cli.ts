@@ -22,7 +22,7 @@ import { validateEventSchema, getQuotaSummary } from './generator/schema-validat
 import { buildSchemaContext } from './generator/schema-context';
 import { buildExistingTrackingBaseline, compareSchemaToLiveTracking } from './generator/live-tracking-insights';
 import { checkSelectors } from './generator/selector-check';
-import { runPreviewVerification, checkGTMOnPage } from './gtm/preview';
+import { PreviewResult, runPreviewVerification, runLiveVerification, checkGTMOnPage } from './gtm/preview';
 import { generatePreviewReport } from './reporter/preview-report';
 import { generateTrackingPlanComparisonReport } from './reporter/tracking-plan-comparison';
 import { TRACKING_HEALTH_REPORT_FILE, writeTrackingHealthReportMarkdown } from './reporter/tracking-health-report';
@@ -33,7 +33,7 @@ import {
   generateSchemaDiffReportMarkdown,
 } from './reporter/schema-diff';
 import { analyzeLiveGtmContainers, generateLiveGtmReviewMarkdown, LiveGtmAnalysis } from './gtm/live-parser';
-import { isShopifyPlatform } from './crawler/platform-detector';
+import { isShopifyPlatform, makeGenericPlatform } from './crawler/platform-detector';
 import { generateShopifyPixelArtifacts } from './shopify/pixel';
 import { buildShopifyBootstrapArtifacts } from './shopify/schema-template';
 import {
@@ -75,6 +75,30 @@ import {
   writeTrackingHealthHistory,
   writeTrackingHealthReport,
 } from './reporter/tracking-health';
+import {
+  assessUpkeepPreview,
+  decideUpkeepNextStep,
+} from './reporter/upkeep-preview';
+import {
+  buildLiveVerificationSchema,
+  LIVE_PREVIEW_REPORT_FILE,
+  LIVE_PREVIEW_RESULT_FILE,
+  LIVE_TRACKING_HEALTH_FILE,
+} from './gtm/live-verifier';
+import {
+  analyzeHealthAuditPreview,
+  analyzeHealthAuditSchemaGaps,
+  decideHealthAuditNextStep,
+  renderHealthAuditPreviewReport,
+  renderHealthAuditRecommendationReport,
+  renderHealthAuditSchemaGapReport,
+} from './reporter/health-audit';
+import {
+  renderAuditSummary,
+  renderPageGroupSummary,
+  renderTrackingPlanSummary,
+  renderUpkeepSummary,
+} from './reporter/summary-presenter';
 
 const program = new Command();
 
@@ -312,6 +336,257 @@ function summarizeDiffForNextStep(diff: SchemaDiffResult): string {
   return 'No schema differences detected. Keep current tracking or focus on health verification.';
 }
 
+function cloneSchemaAsCurrentRecommendation(baseline: EventSchema, siteUrl: string): EventSchema {
+  return {
+    ...baseline,
+    siteUrl,
+    generatedAt: new Date().toISOString(),
+    events: baseline.events.map(event => ({
+      ...event,
+      parameters: event.parameters.map(parameter => ({ ...parameter })),
+    })),
+  };
+}
+
+function matchUrlsByPattern(urls: string[], pattern: string): string[] {
+  try {
+    const regex = new RegExp(pattern);
+    return urls.filter(url => regex.test(url));
+  } catch {
+    return [];
+  }
+}
+
+function carryForwardPageGroups(args: {
+  analysis: SiteAnalysis;
+  previousAnalysis?: SiteAnalysis | null;
+}): SiteAnalysis {
+  const next = args.analysis;
+  const previousGroups = args.previousAnalysis?.pageGroups || [];
+  if (previousGroups.length === 0) {
+    return next;
+  }
+
+  const discoveredUrls = Array.from(new Set([next.rootUrl, ...next.discoveredUrls]));
+  const inheritedGroups = previousGroups.map(group => {
+    const patternMatches = matchUrlsByPattern(discoveredUrls, group.urlPattern);
+    const exactMatches = group.urls.filter(url => discoveredUrls.includes(url));
+    const urls = Array.from(new Set([...patternMatches, ...exactMatches]));
+    return {
+      ...group,
+      urls,
+    };
+  }).filter(group => group.urls.length > 0);
+
+  if (inheritedGroups.length === 0) {
+    return next;
+  }
+
+  next.pageGroups = inheritedGroups;
+  next.pageGroupsReview = {
+    status: 'confirmed',
+    confirmedAt: new Date().toISOString(),
+    confirmedHash: getPageGroupsHash(inheritedGroups),
+  };
+  return next;
+}
+
+function inferContentTypeFromPath(pathname: string): SiteAnalysis['pageGroups'][number]['contentType'] {
+  const lower = pathname.toLowerCase();
+  if (lower === '/' || lower === '') return 'landing';
+  if (/(pricing|plan|product|feature|solutions)/.test(lower)) return 'marketing';
+  if (/(docs|help|guide|learn)/.test(lower)) return 'documentation';
+  if (/(blog|news|article)/.test(lower)) return 'blog';
+  if (/(about|company|team)/.test(lower)) return 'about';
+  if (/(privacy|terms|policy|legal)/.test(lower)) return 'legal';
+  return 'other';
+}
+
+function ensurePageGroupsForHealthAudit(analysis: SiteAnalysis): SiteAnalysis {
+  if (analysis.pageGroups.length > 0) return analysis;
+
+  const urls = uniq([analysis.rootUrl, ...analysis.discoveredUrls]).slice(0, 80);
+  const grouped = new Map<string, string[]>();
+
+  for (const url of urls) {
+    let pathname = '/';
+    try {
+      pathname = new URL(url).pathname || '/';
+    } catch {
+      pathname = '/';
+    }
+    const segment = pathname.split('/').filter(Boolean)[0] || 'root';
+    const key = segment.toLowerCase();
+    const list = grouped.get(key) || [];
+    list.push(url);
+    grouped.set(key, list);
+  }
+
+  analysis.pageGroups = Array.from(grouped.entries()).map(([segment, segmentUrls]) => {
+    const display = segment === 'root' ? 'Root Pages' : `${segment.charAt(0).toUpperCase()}${segment.slice(1)} Pages`;
+    const representative = segmentUrls[0] || analysis.rootUrl;
+    let pathname = '/';
+    try {
+      pathname = new URL(representative).pathname || '/';
+    } catch {
+      pathname = '/';
+    }
+    const pattern = segment === 'root'
+      ? '^/$'
+      : `^/${segment}(?:/|$)`;
+    return {
+      name: `${segment}_pages`,
+      displayName: display,
+      description: `Auto-generated page group for /${segment === 'root' ? '' : segment}`,
+      contentType: inferContentTypeFromPath(pathname),
+      urls: uniq(segmentUrls),
+      urlPattern: pattern,
+      representativeHtml: '',
+    };
+  });
+
+  analysis.pageGroupsReview = {
+    status: 'confirmed',
+    confirmedAt: new Date().toISOString(),
+    confirmedHash: getPageGroupsHash(analysis.pageGroups),
+  };
+  return analysis;
+}
+
+function slugForEvent(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+}
+
+function inferPageRegex(url: string): string {
+  try {
+    const pathname = new URL(url).pathname || '/';
+    if (pathname === '/') return '^/$';
+    return `^${pathname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?$`;
+  } catch {
+    return '^/$';
+  }
+}
+
+function isHighValuePath(url: string): boolean {
+  return /(pricing|plan|product|checkout|cart|contact|demo|signup|register|trial)/i.test(url);
+}
+
+function buildHealthAuditRecommendedSchema(args: {
+  analysis: SiteAnalysis;
+  liveAnalysis: LiveGtmAnalysis;
+}): EventSchema {
+  const liveBaseline = buildExistingTrackingBaseline(args.liveAnalysis);
+  const events: EventSchema['events'] = [];
+  const usedNames = new Set<string>();
+
+  const pushEvent = (event: EventSchema['events'][number]) => {
+    if (!event.eventName || usedNames.has(event.eventName)) return;
+    usedNames.add(event.eventName);
+    events.push(event);
+  };
+
+  for (const liveEvent of liveBaseline.events) {
+    const triggerType = (liveEvent.triggerTypes.find(type => type !== 'unknown') || 'custom') as EventSchema['events'][number]['triggerType'];
+    pushEvent({
+      eventName: liveEvent.eventName,
+      description: `Carry forward live event ${liveEvent.eventName} from current GTM baseline.`,
+      triggerType,
+      elementSelector: liveEvent.selectors[0] || undefined,
+      pageUrlPattern: liveEvent.urlPatterns[0] || undefined,
+      parameters: uniq(liveEvent.parameterNames).slice(0, 8).map(name => ({
+        name,
+        value:
+          name === 'page_location'
+            ? '{{Page URL}}'
+            : name === 'page_title'
+              ? '{{Page Title}}'
+              : name === 'page_referrer'
+                ? '{{Referrer}}'
+                : `{{${name}}}`,
+        description: `Parameter ${name} from live baseline alignment.`,
+      })),
+      priority: /(purchase|checkout|signup|sign_up|lead|contact)/.test(liveEvent.eventName) ? 'high' : 'medium',
+    });
+  }
+
+  const ctaKeywords: Array<{ keyword: RegExp; eventName: string; priority: 'high' | 'medium' }> = [
+    { keyword: /(sign up|signup|register|create account)/i, eventName: 'sign_up_click', priority: 'high' },
+    { keyword: /(contact|get in touch|talk to sales|咨询)/i, eventName: 'contact_click', priority: 'high' },
+    { keyword: /(book demo|request demo|schedule demo)/i, eventName: 'demo_request_click', priority: 'high' },
+    { keyword: /(start trial|free trial|try for free)/i, eventName: 'start_trial_click', priority: 'high' },
+    { keyword: /(pricing|see plans|view pricing)/i, eventName: 'pricing_click', priority: 'medium' },
+    { keyword: /(buy now|checkout|add to cart|purchase)/i, eventName: 'begin_checkout_click', priority: 'high' },
+  ];
+
+  for (const page of args.analysis.pages.slice(0, 25)) {
+    const pageRegex = inferPageRegex(page.url);
+    for (const element of page.elements.slice(0, 120)) {
+      if (!element.isVisible) continue;
+      if (element.type !== 'button' && element.type !== 'link') continue;
+      const label = (element.text || element.ariaLabel || '').trim();
+      if (!label) continue;
+
+      const matchedKeyword = ctaKeywords.find(item => item.keyword.test(label));
+      const eventName = matchedKeyword?.eventName || `cta_click_${slugForEvent(label)}`;
+      const priority = matchedKeyword?.priority || (isHighValuePath(page.url) ? 'high' : 'medium');
+      pushEvent({
+        eventName,
+        description: `Tracks CTA interaction "${label}" on ${page.url}.`,
+        triggerType: 'click',
+        elementSelector: element.selector || undefined,
+        pageUrlPattern: pageRegex,
+        parameters: [
+          { name: 'page_location', value: '{{Page URL}}', description: 'Current page URL' },
+          { name: 'page_title', value: '{{Page Title}}', description: 'Current page title' },
+          { name: 'link_text', value: '{{Click Text}}', description: 'Clicked CTA text' },
+          { name: 'link_url', value: '{{Click URL}}', description: 'Clicked CTA URL' },
+        ],
+        priority,
+      });
+      if (events.length >= 40) break;
+    }
+    if (events.length >= 40) break;
+  }
+
+  const highValueUrls = uniq([args.analysis.rootUrl, ...args.analysis.discoveredUrls]).filter(isHighValuePath).slice(0, 12);
+  for (const url of highValueUrls) {
+    const lower = url.toLowerCase();
+    const eventName = lower.includes('pricing')
+      ? 'view_pricing_page'
+      : lower.includes('product')
+        ? 'view_product_page'
+        : lower.includes('checkout')
+          ? 'view_checkout_page'
+          : lower.includes('cart')
+            ? 'view_cart_page'
+            : lower.includes('contact')
+              ? 'view_contact_page'
+              : `view_page_${slugForEvent(url)}`;
+    pushEvent({
+      eventName,
+      description: `Tracks page view coverage for high-value page ${url}.`,
+      triggerType: 'page_view',
+      pageUrlPattern: inferPageRegex(url),
+      parameters: [
+        { name: 'page_location', value: '{{Page URL}}', description: 'Current page URL' },
+        { name: 'page_title', value: '{{Page Title}}', description: 'Current page title' },
+        { name: 'page_referrer', value: '{{Referrer}}', description: 'Referrer page URL' },
+      ],
+      priority: 'high',
+    });
+  }
+
+  return {
+    siteUrl: args.analysis.rootUrl,
+    generatedAt: new Date().toISOString(),
+    events: events.slice(0, 60),
+  };
+}
+
 function buildRunsScenarioSummary(entries: Array<{
   scenario: WorkflowScenario;
   subScenario: WorkflowSubScenario;
@@ -458,12 +733,39 @@ function generateUpkeepArtifacts(args: {
   currentSchema: EventSchema;
   baselineSchema: EventSchema;
   healthFile: string;
+  previewResultFile: string;
   schemaComparisonFile: string;
   previewFile: string;
   recommendationFile: string;
-}): SchemaDiffResult {
+}): {
+  diff: SchemaDiffResult;
+  health: TrackingHealthReport | null;
+  previewResult: PreviewResult | null;
+  previewAssessment: ReturnType<typeof assessUpkeepPreview>;
+  nextStep: ReturnType<typeof decideUpkeepNextStep>;
+  evidenceSource: AutomationEvidenceSource;
+  evidenceHealthFile: string | null;
+  evidencePreviewResultFile: string | null;
+} {
   const diff = diffEventSchemas(args.currentSchema, args.baselineSchema);
-  const health = readTrackingHealthReport(args.healthFile);
+  const evidence = readAutomationEvidence({
+    artifactDir: args.artifactDir,
+    preferredHealthFile: args.healthFile,
+    preferredPreviewResultFile: args.previewResultFile,
+  });
+  const health = evidence.health;
+  const previewResult = evidence.previewResult;
+  const previewAssessment = assessUpkeepPreview({
+    currentSchema: args.currentSchema,
+    baselineSchema: args.baselineSchema,
+    diff,
+    health,
+    previewResult: (previewResult || null),
+  });
+  const nextStep = decideUpkeepNextStep({
+    diff,
+    previewAssessment,
+  });
 
   writeArtifactTextFile({
     artifactDir: args.artifactDir,
@@ -480,22 +782,33 @@ function generateUpkeepArtifacts(args: {
   const previewLines: string[] = [
     '# Upkeep Preview Report',
     '',
-    `**Health source:** ${args.healthFile}`,
+    `**Health source:** ${evidence.healthFile || args.healthFile}`,
+    `**Preview source:** ${evidence.previewResultFile || args.previewResultFile}`,
+    '',
+    '## Status Summary',
+    '',
+    ...previewAssessment.summaryLines,
+    '',
+    '## Event Status',
+    '',
+    '| Event | Status | Reason |',
+    '| --- | --- | --- |',
   ];
-  if (!health) {
-    previewLines.push('', '- tracking-health.json not found. Run preview before final upkeep decision.');
+  if (previewAssessment.items.length === 0) {
+    previewLines.push('| _none_ | not_observable | No preview-observable events were available. |');
   } else {
-    previewLines.push(
-      '',
-      `- Grade: ${health.grade}`,
-      `- Score: ${formatTrackingHealthScore(health.score)}`,
-      `- Blockers: ${health.blockers.length}`,
-      `- Unexpected events: ${health.unexpectedEventNames.length}`,
-      '',
-      '## Blockers',
-      '',
-      ...(health.blockers.length > 0 ? health.blockers.map(item => `- ${item}`) : ['- none']),
-    );
+    for (const item of previewAssessment.items) {
+      previewLines.push(`| \`${item.eventName}\` | ${item.status} | ${item.reason} |`);
+    }
+  }
+  previewLines.push('');
+  if (!health) {
+    previewLines.push('- tracking-health.json not found. Run preview before final upkeep decision.');
+  } else {
+    previewLines.push(`- Health grade: ${health.grade}`);
+    previewLines.push(`- Health score: ${formatTrackingHealthScore(health.score)}`);
+    previewLines.push(`- Blockers: ${health.blockers.length}`);
+    previewLines.push(`- Unexpected events: ${health.unexpectedEventNames.length}`);
   }
   previewLines.push('', '_Generated by event-tracking-skill_');
   writeArtifactTextFile({
@@ -509,14 +822,15 @@ function generateUpkeepArtifacts(args: {
     '# Upkeep Next Step Recommendation',
     '',
     `- Schema delta: +${diff.added.length} / ~${diff.changed.length} / -${diff.removed.length}`,
-    `- Recommendation: ${summarizeDiffForNextStep(diff)}`,
+    `- Preview status: healthy=${previewAssessment.counts.healthy}, failure=${previewAssessment.counts.failure}, drift=${previewAssessment.counts.drift}, not_observable=${previewAssessment.counts.not_observable}`,
+    `- Tracking Update required: ${nextStep.trackingUpdateRequired ? 'yes' : 'no'}`,
+    `- Tracking Update type: ${nextStep.recommendationType}`,
+    `- Recommendation: ${nextStep.reason}`,
   ];
   if (!health) {
-    recommendationLines.push('- Preview status: missing, run preview to validate drift and failures.');
+    recommendationLines.push('- Preview validation note: tracking-health.json missing; affected events are marked not_observable.');
   } else if (hasBlockingTrackingHealth(health)) {
-    recommendationLines.push('- Preview status: blocking issues found, open Tracking Update and fix blockers first.');
-  } else {
-    recommendationLines.push('- Preview status: non-blocking, proceed with controlled Tracking Update rollout.');
+    recommendationLines.push('- Preview validation note: blocking health issues detected.');
   }
   recommendationLines.push('', '_Generated by event-tracking-skill_');
   writeArtifactTextFile({
@@ -526,24 +840,55 @@ function generateUpkeepArtifacts(args: {
     stage: 'upkeep_report',
   });
 
-  return diff;
+  return {
+    diff,
+    health,
+    previewResult,
+    previewAssessment,
+    nextStep,
+    evidenceSource: evidence.source,
+    evidenceHealthFile: evidence.healthFile,
+    evidencePreviewResultFile: evidence.previewResultFile,
+  };
 }
 
 function generateHealthAuditArtifacts(args: {
   artifactDir: string;
   schema: EventSchema;
+  analysis: SiteAnalysis;
   liveAnalysis: LiveGtmAnalysis;
   schemaGapFile: string;
   previewFile: string;
   recommendationFile: string;
-}): void {
+}): {
+  baseline: ReturnType<typeof buildExistingTrackingBaseline>;
+  liveDelta: ReturnType<typeof compareSchemaToLiveTracking>;
+  gapSummary: ReturnType<typeof analyzeHealthAuditSchemaGaps>;
+  previewSummary: ReturnType<typeof analyzeHealthAuditPreview>;
+  recommendation: ReturnType<typeof decideHealthAuditNextStep>;
+} {
   const baseline = buildExistingTrackingBaseline(args.liveAnalysis);
   const liveDelta = compareSchemaToLiveTracking(args.schema, args.liveAnalysis);
-  const gapReport = generateTrackingPlanComparisonReport({
+  const gapSummary = analyzeHealthAuditSchemaGaps({
     schema: args.schema,
     baseline,
-    liveDelta,
-  }).replace('# Tracking Plan Comparison Report', '# Tracking Health Schema Gap Report');
+    analysis: args.analysis,
+  });
+  const previewSummary = analyzeHealthAuditPreview({
+    schema: args.schema,
+    baseline,
+    analysis: args.analysis,
+  });
+  const recommendation = decideHealthAuditNextStep({
+    gapSummary,
+    previewSummary,
+  });
+
+  const gapReport = renderHealthAuditSchemaGapReport({
+    schema: args.schema,
+    baseline,
+    gapSummary,
+  });
   writeArtifactTextFile({
     artifactDir: args.artifactDir,
     file: args.schemaGapFile,
@@ -552,19 +897,16 @@ function generateHealthAuditArtifacts(args: {
   });
 
   const previewLines: string[] = [
-    '# Tracking Health Preview Report',
+    renderHealthAuditPreviewReport({
+      previewSummary,
+    }),
     '',
-    '- This scenario audits current live tracking against a candidate schema baseline.',
-    '- Automated GTM preview is optional here and not required for the initial health audit.',
-    '',
-    '## Current Live Signals',
+    '## Live Alignment Snapshot',
     '',
     `- Live events found: ${baseline.totalLiveEvents}`,
     `- Candidate schema events: ${args.schema.events.length}`,
     `- Reused events: ${liveDelta.reusedEventCount}`,
     `- Net-new events: ${liveDelta.newEventCount}`,
-    '',
-    '_Generated by event-tracking-skill_',
   ];
   writeArtifactTextFile({
     artifactDir: args.artifactDir,
@@ -574,16 +916,14 @@ function generateHealthAuditArtifacts(args: {
   });
 
   const recommendationLines: string[] = [
-    '# Tracking Health Audit Next Step Recommendation',
+    renderHealthAuditRecommendationReport({
+      recommendation,
+      gapSummary,
+      previewSummary,
+    }),
     '',
-    baseline.totalLiveEvents === 0
-      ? '- Current live tracking coverage appears minimal or opaque. Recommended next step: start New Setup.'
-      : '- Current live tracking exists but has measurable gaps. Recommended next step: evaluate New Setup migration plan.',
-    '',
-    '- This audit is an assessment entry point and does not generate GTM sync configuration by itself.',
-    '- If you decide to rebuild with JTracking, continue with scenario `new_setup` and keep this audit as baseline evidence.',
-    '',
-    '_Generated by event-tracking-skill_',
+    '- This audit does not generate GTM deployment configuration.',
+    '- Continue with scenario `new_setup` only when the above recommendation says `Enter New Setup: yes`.',
   ];
   writeArtifactTextFile({
     artifactDir: args.artifactDir,
@@ -591,6 +931,14 @@ function generateHealthAuditArtifacts(args: {
     content: recommendationLines.join('\n'),
     stage: 'tracking_health_audit_report',
   });
+
+  return {
+    baseline,
+    liveDelta,
+    gapSummary,
+    previewSummary,
+    recommendation,
+  };
 }
 
 function refreshAndIndexWorkflowState(
@@ -645,13 +993,14 @@ function parseCommaSeparatedList(value?: string): string[] {
 }
 
 function printPageGroupsSummary(pageGroups: SiteAnalysis['pageGroups']): void {
-  console.log('\n📋 Current page groups:');
-  pageGroups.forEach((group, idx) => {
-    const pattern = group.urlPattern || '(all pages)';
-    const label = group.displayName || group.name;
-    console.log(`   [${idx + 1}] ${label} | ${group.contentType} | ${pattern} | ${group.urls.length} page(s)`);
-    console.log(`       URLs: ${group.urls.join(', ')}`);
-  });
+  console.log(`\n${renderPageGroupSummary(pageGroups)}`);
+}
+
+function printFilesSection(title: string, entries: Array<[string, string]>): void {
+  console.log(`\n${title}`);
+  for (const [label, value] of entries) {
+    console.log(`- ${label}: ${value}`);
+  }
 }
 
 function writeShopifyPreviewInstructions(
@@ -761,8 +1110,242 @@ function getRequiredLiveGtmIds(analysis: SiteAnalysis, override?: string): strin
   return uniq((analysis.gtmPublicIds || []).map(id => id.toUpperCase()));
 }
 
+function hasLiveGtmForVerification(args: {
+  analysis: SiteAnalysis | null | undefined;
+  liveAnalysis?: LiveGtmAnalysis | null;
+  gtmIdOverride?: string;
+}): boolean {
+  const analysisIds = args.analysis ? getRequiredLiveGtmIds(args.analysis, args.gtmIdOverride) : [];
+  const liveIds = uniq(args.liveAnalysis?.detectedContainerIds || []);
+  const liveEvents = args.liveAnalysis?.aggregatedEvents.length || 0;
+  return analysisIds.length > 0 || liveIds.length > 0 || liveEvents > 0;
+}
+
 function getTrackingHealthFile(artifactDir: string): string {
   return path.join(artifactDir, TRACKING_HEALTH_FILE);
+}
+
+function getLiveTrackingHealthFile(artifactDir: string): string {
+  return path.join(artifactDir, LIVE_TRACKING_HEALTH_FILE);
+}
+
+function getLivePreviewResultFile(artifactDir: string): string {
+  return path.join(artifactDir, LIVE_PREVIEW_RESULT_FILE);
+}
+
+function getLivePreviewReportFile(artifactDir: string): string {
+  return path.join(artifactDir, LIVE_PREVIEW_REPORT_FILE);
+}
+
+type AutomationEvidenceSource = 'tracking_health' | 'live_tracking_health' | 'none';
+
+function readAutomationEvidence(args: {
+  artifactDir: string;
+  preferredHealthFile?: string;
+  preferredPreviewResultFile?: string;
+  allowLiveFallback?: boolean;
+}): {
+  health: TrackingHealthReport | null;
+  previewResult: PreviewResult | null;
+  source: AutomationEvidenceSource;
+  healthFile: string | null;
+  previewResultFile: string | null;
+} {
+  const defaultHealthFile = getTrackingHealthFile(args.artifactDir);
+  const defaultPreviewResultFile = path.join(args.artifactDir, 'preview-result.json');
+  const preferredHealthFile = args.preferredHealthFile ? path.resolve(args.preferredHealthFile) : defaultHealthFile;
+  const preferredPreviewResultFile = args.preferredPreviewResultFile
+    ? path.resolve(args.preferredPreviewResultFile)
+    : defaultPreviewResultFile;
+  const allowLiveFallback = args.allowLiveFallback !== false;
+
+  const preferredHealth = readTrackingHealthReport(preferredHealthFile);
+  const preferredPreview = tryReadJsonFile<PreviewResult>(preferredPreviewResultFile);
+  if (preferredHealth || preferredPreview) {
+    return {
+      health: preferredHealth,
+      previewResult: preferredPreview,
+      source: preferredHealthFile === defaultHealthFile ? 'tracking_health' : 'tracking_health',
+      healthFile: preferredHealth ? preferredHealthFile : null,
+      previewResultFile: preferredPreview ? preferredPreviewResultFile : null,
+    };
+  }
+
+  const shouldCheckLiveFallback = allowLiveFallback
+    && preferredHealthFile === defaultHealthFile
+    && preferredPreviewResultFile === defaultPreviewResultFile;
+
+  if (shouldCheckLiveFallback) {
+    const liveHealthFile = getLiveTrackingHealthFile(args.artifactDir);
+    const livePreviewResultFile = getLivePreviewResultFile(args.artifactDir);
+    const liveHealth = readTrackingHealthReport(liveHealthFile);
+    const livePreview = tryReadJsonFile<PreviewResult>(livePreviewResultFile);
+    if (liveHealth || livePreview) {
+      return {
+        health: liveHealth,
+        previewResult: livePreview,
+        source: 'live_tracking_health',
+        healthFile: liveHealth ? liveHealthFile : null,
+        previewResultFile: livePreview ? livePreviewResultFile : null,
+      };
+    }
+  }
+
+  return {
+    health: null,
+    previewResult: null,
+    source: 'none',
+    healthFile: null,
+    previewResultFile: null,
+  };
+}
+
+async function confirmOptionalLiveVerification(args: {
+  withLiveVerification?: boolean;
+  skipLiveVerification?: boolean;
+  siteUrl: string;
+}): Promise<boolean> {
+  if (args.withLiveVerification) return true;
+  if (args.skipLiveVerification) return false;
+
+  const answer = await prompt(
+    `\nRun published live GTM verification for ${args.siteUrl}? This opens the real site, simulates interactions, and captures actual GA4 requests from the live GTM setup. (yes/no): `,
+  );
+  return answer.toLowerCase() === 'yes';
+}
+
+async function resolveLiveGtmAnalysisForVerification(args: {
+  artifactDir: string;
+  analysis: SiteAnalysis;
+  liveGtmAnalysisFile?: string;
+  gtmIdOverride?: string;
+  primaryContainerId?: string;
+  allowPrimarySelection?: boolean;
+}): Promise<{ liveAnalysis: LiveGtmAnalysis; file: string; reviewFile: string; }> {
+  const liveAnalysisFile = args.liveGtmAnalysisFile?.trim()
+    ? path.resolve(args.liveGtmAnalysisFile)
+    : path.join(args.artifactDir, 'live-gtm-analysis.json');
+  if (fs.existsSync(liveAnalysisFile)) {
+    return {
+      liveAnalysis: readJsonFile<LiveGtmAnalysis>(liveAnalysisFile),
+      file: liveAnalysisFile,
+      reviewFile: path.join(args.artifactDir, 'live-gtm-review.md'),
+    };
+  }
+
+  const publicIds = getRequiredLiveGtmIds(args.analysis, args.gtmIdOverride);
+  if (publicIds.length === 0) {
+    throw new Error('No live GTM public IDs were found for live verification.');
+  }
+
+  const liveAnalysis = await analyzeLiveGtmContainers({
+    siteUrl: args.analysis.rootUrl,
+    publicIds,
+  });
+  const meaningfulContainers = liveAnalysis.containers.filter(container =>
+    container.events.length > 0 || container.measurementIds.length > 0,
+  );
+  const requestedPrimaryId = args.primaryContainerId?.trim().toUpperCase();
+
+  if (requestedPrimaryId) {
+    if (!liveAnalysis.containers.some(container => container.publicId === requestedPrimaryId)) {
+      throw new Error(`Primary container ${requestedPrimaryId} was not part of the analyzed set.`);
+    }
+    liveAnalysis.primaryContainerId = requestedPrimaryId;
+  } else if (args.allowPrimarySelection && meaningfulContainers.length > 1) {
+    const selected = await selectFromList(
+      meaningfulContainers,
+      'primary comparison GTM container',
+      container => `${container.publicId} (${container.events.length} events, ${container.measurementIds.join(', ') || 'no measurement IDs'})`,
+    );
+    liveAnalysis.primaryContainerId = selected.publicId;
+  } else if (meaningfulContainers.length === 1) {
+    liveAnalysis.primaryContainerId = meaningfulContainers[0].publicId;
+  }
+
+  const reviewFile = path.join(args.artifactDir, 'live-gtm-review.md');
+  writeArtifactJsonFile({
+    artifactDir: args.artifactDir,
+    file: liveAnalysisFile,
+    value: liveAnalysis,
+    stage: 'live_gtm_analyze',
+  });
+  writeArtifactTextFile({
+    artifactDir: args.artifactDir,
+    file: reviewFile,
+    content: generateLiveGtmReviewMarkdown(liveAnalysis),
+    stage: 'live_gtm_analyze',
+  });
+
+  return {
+    liveAnalysis,
+    file: liveAnalysisFile,
+    reviewFile,
+  };
+}
+
+async function runAndPersistLiveVerification(args: {
+  artifactDir: string;
+  analysis: SiteAnalysis;
+  liveAnalysis: LiveGtmAnalysis;
+}): Promise<{
+  result: PreviewResult;
+  reportFile: string;
+  resultFile: string;
+  healthFile: string;
+  skippedEvents: Array<{ eventName: string; reason: string }>;
+}> {
+  if (args.analysis.pages.length === 0) {
+    throw new Error('Live verification requires a non-empty site-analysis.json with crawled pages.');
+  }
+
+  const buildResult = buildLiveVerificationSchema(args.liveAnalysis);
+  if (buildResult.schema.events.length === 0) {
+    throw new Error('No automation-friendly live GTM events were available for published verification.');
+  }
+
+  const result = await runLiveVerification(
+    args.analysis,
+    buildResult.schema,
+    args.liveAnalysis.primaryContainerId || args.liveAnalysis.detectedContainerIds[0] || 'UNKNOWN',
+  );
+  const resultFile = getLivePreviewResultFile(args.artifactDir);
+  const reportFile = getLivePreviewReportFile(args.artifactDir);
+  const healthFile = getLiveTrackingHealthFile(args.artifactDir);
+  const report = generatePreviewReport(result, undefined, {
+    title: 'Live GTM Verification Report',
+    startedLabel: 'Verification Started',
+    endedLabel: 'Verification Ended',
+    manualVerificationLabel: 'After fixing issues, re-run live verification or manually test the same live user journey on the published site.',
+  });
+  const reportWithSkipped = buildResult.skippedEvents.length > 0
+    ? `${report}\n\n## Skipped Live Events\n\n${buildResult.skippedEvents.map(item => `- \`${item.eventName}\`: ${item.reason}`).join('\n')}\n`
+    : report;
+
+  writeArtifactJsonFile({
+    artifactDir: args.artifactDir,
+    file: resultFile,
+    value: result,
+    stage: 'live_gtm_verify',
+  });
+  writeArtifactTextFile({
+    artifactDir: args.artifactDir,
+    file: reportFile,
+    content: reportWithSkipped,
+    stage: 'live_gtm_verify',
+  });
+  const liveHealth = buildTrackingHealthReport(result);
+  writeTrackingHealthReport(healthFile, liveHealth);
+  snapshotArtifactFile({ artifactDir: args.artifactDir, file: healthFile, stage: 'live_gtm_verify' });
+  refreshAndIndexWorkflowState(args.artifactDir);
+
+  return {
+    result,
+    reportFile,
+    resultFile,
+    healthFile,
+    skippedEvents: buildResult.skippedEvents,
+  };
 }
 
 function evaluatePublishReadiness(artifactDir: string): {
@@ -974,9 +1557,13 @@ program
     const workflowState = refreshAndIndexWorkflowState(artifactDir);
 
     console.log(`\n✅ Page groups confirmed.`);
-    console.log(`   Confirmation recorded in: ${resolvedFile}`);
+    console.log(renderPageGroupSummary(analysis.pageGroups));
+    printFilesSection('Files', [
+      ['Confirmed page groups', resolvedFile],
+      ['Workflow state', path.join(artifactDir, WORKFLOW_STATE_FILE)],
+    ]);
     if (workflowState.nextCommand) {
-      console.log(`   Next step: ${workflowState.nextCommand}`);
+      console.log(`\nNext step: ${workflowState.nextCommand}`);
     }
   });
 
@@ -988,6 +1575,7 @@ program
   .action(async (analysisFile: string, opts: { gtmId?: string; primaryContainerId?: string }) => {
     const resolvedFile = path.resolve(analysisFile);
     const analysis = readJsonFile<SiteAnalysis>(resolvedFile);
+    const artifactDir = path.dirname(resolvedFile);
     const publicIds = getRequiredLiveGtmIds(analysis, opts.gtmId);
 
     if (publicIds.length === 0) {
@@ -999,59 +1587,81 @@ program
     console.log(`\n🔍 Analyzing live GTM baseline for: ${analysis.rootUrl}`);
     console.log(`   Containers: ${publicIds.join(', ')}`);
 
-    const liveAnalysis = await analyzeLiveGtmContainers({
-      siteUrl: analysis.rootUrl,
-      publicIds,
-    });
-
-    const meaningfulContainers = liveAnalysis.containers.filter(container =>
-      container.events.length > 0 || container.measurementIds.length > 0,
-    );
-    const requestedPrimaryId = opts.primaryContainerId?.trim().toUpperCase();
-
-    if (requestedPrimaryId) {
-      if (!liveAnalysis.containers.some(container => container.publicId === requestedPrimaryId)) {
-        console.error(`\n❌ Primary container ${requestedPrimaryId} was not part of the analyzed set.`);
-        process.exit(1);
-      }
-      liveAnalysis.primaryContainerId = requestedPrimaryId;
-    } else if (meaningfulContainers.length > 1) {
-      const selected = await selectFromList(
-        meaningfulContainers,
-        'primary comparison GTM container',
-        container => `${container.publicId} (${container.events.length} events, ${container.measurementIds.join(', ') || 'no measurement IDs'})`,
-      );
-      liveAnalysis.primaryContainerId = selected.publicId;
-    } else if (meaningfulContainers.length === 1) {
-      liveAnalysis.primaryContainerId = meaningfulContainers[0].publicId;
-    }
-
-    const artifactDir = path.dirname(resolvedFile);
-    const outFile = path.join(artifactDir, 'live-gtm-analysis.json');
-    const reviewFile = path.join(artifactDir, 'live-gtm-review.md');
-    writeArtifactJsonFile({
+    const resolved = await resolveLiveGtmAnalysisForVerification({
       artifactDir,
-      file: outFile,
-      value: liveAnalysis,
-      stage: 'live_gtm_analyze',
+      analysis,
+      gtmIdOverride: opts.gtmId,
+      primaryContainerId: opts.primaryContainerId,
+      allowPrimarySelection: true,
     });
-    writeArtifactTextFile({
-      artifactDir,
-      file: reviewFile,
-      content: generateLiveGtmReviewMarkdown(liveAnalysis),
-      stage: 'live_gtm_analyze',
-    });
+    const liveAnalysis = resolved.liveAnalysis;
     const workflowState = refreshAndIndexWorkflowState(artifactDir);
 
     console.log(`\n✅ Live GTM baseline analyzed:`);
     console.log(`   Containers analyzed: ${liveAnalysis.containers.length}`);
     console.log(`   Primary comparison container: ${liveAnalysis.primaryContainerId || 'none'}`);
     console.log(`   Aggregated live events: ${liveAnalysis.aggregatedEvents.length}`);
-    console.log(`   Output: ${outFile}`);
-    console.log(`   Review: ${reviewFile}`);
+    console.log(`   Output: ${resolved.file}`);
+    console.log(`   Review: ${resolved.reviewFile}`);
     console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
     if (workflowState.nextCommand) {
       console.log(`   Next step: ${workflowState.nextCommand}`);
+    }
+  });
+
+program
+  .command('verify-live-gtm <site-analysis-file>')
+  .description('Run best-effort verification against the published live GTM setup by simulating real browser interactions and capturing GA4 requests')
+  .option('--live-gtm-analysis <file>', 'Path to live-gtm-analysis.json')
+  .option('--gtm-id <ids>', 'Comma-separated GTM public IDs to analyze if live-gtm-analysis.json is missing')
+  .option('--primary-container-id <id>', 'Primary live GTM container to treat as the verification baseline')
+  .action(async (analysisFile: string, opts: { liveGtmAnalysis?: string; gtmId?: string; primaryContainerId?: string }) => {
+    const resolvedFile = path.resolve(analysisFile);
+    const analysis = readJsonFile<SiteAnalysis>(resolvedFile);
+    const artifactDir = path.dirname(resolvedFile);
+
+    if (analysis.pages.length === 0) {
+      console.error('\n❌ verify-live-gtm requires crawled pages in site-analysis.json.');
+      console.error('   Re-run `analyze` first so browser verification has real pages and elements to work with.');
+      process.exit(1);
+    }
+
+    let resolved;
+    try {
+      resolved = await resolveLiveGtmAnalysisForVerification({
+        artifactDir,
+        analysis,
+        liveGtmAnalysisFile: opts.liveGtmAnalysis,
+        gtmIdOverride: opts.gtmId,
+        primaryContainerId: opts.primaryContainerId,
+        allowPrimarySelection: true,
+      });
+    } catch (error) {
+      console.error(`\n❌ ${(error as Error).message}`);
+      process.exit(1);
+    }
+
+    console.log(`\n🔎 Running published live GTM verification for: ${analysis.rootUrl}`);
+    console.log(`   Verification baseline: ${resolved.liveAnalysis.primaryContainerId || 'none'}`);
+    console.log(`   Live events available: ${resolved.liveAnalysis.aggregatedEvents.length}`);
+
+    try {
+      const liveVerification = await runAndPersistLiveVerification({
+        artifactDir,
+        analysis,
+        liveAnalysis: resolved.liveAnalysis,
+      });
+      console.log(`\n✅ Published live GTM verification completed.`);
+      console.log(`   Result: ${liveVerification.resultFile}`);
+      console.log(`   Report: ${liveVerification.reportFile}`);
+      console.log(`   Health: ${liveVerification.healthFile}`);
+      console.log(`   Verified events: ${liveVerification.result.totalFired}/${liveVerification.result.totalExpected}`);
+      if (liveVerification.skippedEvents.length > 0) {
+        console.log(`   Skipped live events: ${liveVerification.skippedEvents.map(item => item.eventName).join(', ')}`);
+      }
+    } catch (error) {
+      console.error(`\n❌ Failed to verify live GTM setup: ${(error as Error).message}`);
+      process.exit(1);
     }
   });
 
@@ -2565,21 +3175,20 @@ program
 
     refreshAndIndexWorkflowState(artifactDir);
 
-    console.log(`\n✅ Event spec generated: ${outFile}`);
-    console.log(`   ${schema.events.length} events documented`);
-    if (liveDelta) {
-      console.log(`   Live baseline comparison: ${liveDelta.reusedEventCount} reused, ${liveDelta.newEventCount} new`);
-      if (liveDelta.problemsSolved.length > 0) {
-        console.log(`   Solves: ${liveDelta.problemsSolved[0]}`);
-      }
-      if (baseline) {
-        console.log(`   Comparison report: ${comparisonOutFile}`);
-      }
-    }
+    console.log(`\n✅ Event spec generated.`);
+    console.log(renderTrackingPlanSummary({
+      schema,
+      baseline,
+      liveDelta,
+    }));
     if (quota.customDimensions > 0) {
-      console.log(`   ${quota.customDimensions} custom dimensions listed`);
+      console.log(`\nCustom dimensions to register in GA4: ${quota.customDimensionNames.map(name => `\`${name}\``).join(', ')}`);
     }
-    console.log(`   Workflow state: ${path.join(artifactDir, WORKFLOW_STATE_FILE)}`);
+    printFilesSection('Files', [
+      ['Event spec', outFile],
+      ...(baseline && liveDelta ? [['Comparison report', comparisonOutFile] as [string, string]] : []),
+      ['Workflow state', path.join(artifactDir, WORKFLOW_STATE_FILE)],
+    ]);
   });
 
 program
@@ -2665,16 +3274,18 @@ program
     const healthFile = opts.healthFile?.trim()
       ? path.resolve(opts.healthFile)
       : path.join(artifactDir, TRACKING_HEALTH_FILE);
+    const previewResultFile = path.join(artifactDir, 'preview-result.json');
 
     const schemaComparisonFile = path.join(artifactDir, 'upkeep-schema-comparison-report.md');
     const previewFile = path.join(artifactDir, 'upkeep-preview-report.md');
     const recommendationFile = path.join(artifactDir, 'upkeep-next-step-recommendation.md');
 
-    generateUpkeepArtifacts({
+    const upkeepArtifacts = generateUpkeepArtifacts({
       artifactDir,
       currentSchema,
       baselineSchema,
       healthFile,
+      previewResultFile,
       schemaComparisonFile,
       previewFile,
       recommendationFile,
@@ -2686,9 +3297,22 @@ program
     });
 
     console.log(`\n✅ Upkeep reports generated.`);
-    console.log(`   Schema comparison: ${schemaComparisonFile}`);
-    console.log(`   Preview summary: ${previewFile}`);
-    console.log(`   Recommendation: ${recommendationFile}`);
+    console.log(renderUpkeepSummary({
+      currentSchema,
+      baselineSchema,
+      diff: upkeepArtifacts.diff,
+      previewAssessment: upkeepArtifacts.previewAssessment,
+      nextStep: upkeepArtifacts.nextStep,
+      health: upkeepArtifacts.health,
+      previewResult: upkeepArtifacts.previewResult,
+      evidenceSource: upkeepArtifacts.evidenceSource,
+    }));
+    printFilesSection('Files', [
+      ['Schema comparison', schemaComparisonFile],
+      ['Preview summary', previewFile],
+      ['Recommendation', recommendationFile],
+      ['Workflow state', path.join(artifactDir, WORKFLOW_STATE_FILE)],
+    ]);
   });
 
 program
@@ -2716,12 +3340,32 @@ program
     }
 
     const liveAnalysis = readJsonFile<LiveGtmAnalysis>(liveAnalysisFile);
+    const analysisFile = path.join(artifactDir, 'site-analysis.json');
+    const analysis = tryReadJsonFile<SiteAnalysis>(analysisFile) || ensurePageGroupsForHealthAudit({
+      rootUrl: schema.siteUrl,
+      rootDomain: (() => {
+        try {
+          return new URL(schema.siteUrl).hostname;
+        } catch {
+          return '';
+        }
+      })(),
+      platform: makeGenericPlatform(),
+      pages: [],
+      pageGroups: [],
+      discoveredUrls: [],
+      skippedUrls: [],
+      crawlWarnings: ['Generated fallback analysis for health-audit reporting.'],
+      dataLayerEvents: [],
+      gtmPublicIds: [],
+    });
     const schemaGapFile = path.join(artifactDir, 'tracking-health-schema-gap-report.md');
     const previewFile = path.join(artifactDir, 'tracking-health-preview-report.md');
     const recommendationFile = path.join(artifactDir, 'tracking-health-next-step-recommendation.md');
-    generateHealthAuditArtifacts({
+    const auditArtifacts = generateHealthAuditArtifacts({
       artifactDir,
       schema,
+      analysis,
       liveAnalysis,
       schemaGapFile,
       previewFile,
@@ -2734,9 +3378,25 @@ program
     });
 
     console.log(`\n✅ Tracking Health Audit reports generated.`);
-    console.log(`   Schema gap report: ${schemaGapFile}`);
-    console.log(`   Preview summary: ${previewFile}`);
-    console.log(`   Recommendation: ${recommendationFile}`);
+    const evidence = readAutomationEvidence({ artifactDir });
+    console.log(renderAuditSummary({
+      schema,
+      analysis,
+      baseline: auditArtifacts.baseline,
+      liveDelta: auditArtifacts.liveDelta,
+      gapSummary: auditArtifacts.gapSummary,
+      previewSummary: auditArtifacts.previewSummary,
+      recommendation: auditArtifacts.recommendation,
+      health: evidence.health,
+      previewResult: evidence.previewResult,
+      evidenceSource: evidence.source,
+    }));
+    printFilesSection('Files', [
+      ['Schema gap report', schemaGapFile],
+      ['Preview summary', previewFile],
+      ['Recommendation', recommendationFile],
+      ['Workflow state', path.join(artifactDir, WORKFLOW_STATE_FILE)],
+    ]);
   });
 
 program
@@ -2850,15 +3510,28 @@ program
 
 program
   .command('run-upkeep <artifact-path>')
-  .description('Scenario template: start Upkeep run and generate upkeep deliverables when inputs are ready')
+  .description('Scenario template: refresh upkeep baseline and generate upkeep deliverables')
+  .option('--url <url>', 'Re-crawl this site URL before upkeep comparison')
+  .option('--urls <list>', `Partial crawl URLs (comma-separated, max ${CRAWL_MAX_PARTIAL_URLS})`)
+  .option(
+    '--storefront-password <password>',
+    'Optional Shopify storefront password when re-crawling a protected storefront',
+  )
   .option('--schema-file <file>', 'Path to current event-schema.json (default: <artifact-dir>/event-schema.json)')
   .option('--baseline-schema <file>', 'Baseline event-schema.json to compare against')
   .option('--health-file <file>', 'Tracking health file used for upkeep preview summary')
+  .option('--with-live-verification', 'Run published live GTM verification before generating the upkeep summary')
+  .option('--skip-live-verification', 'Skip the published live GTM verification prompt even when live GTM is detected')
   .option('--input-scope <scope>', 'Optional free-form input scope note for this run')
-  .action((artifactPath: string, opts: {
+  .action(async (artifactPath: string, opts: {
+    url?: string;
+    urls?: string;
+    storefrontPassword?: string;
     schemaFile?: string;
     baselineSchema?: string;
     healthFile?: string;
+    withLiveVerification?: boolean;
+    skipLiveVerification?: boolean;
     inputScope?: string;
   }) => {
     const artifactDir = resolveArtifactDirFromInput(artifactPath);
@@ -2877,18 +3550,6 @@ program
       subScenario: 'none',
       inputScope,
     });
-
-    const schemaFile = opts.schemaFile?.trim()
-      ? path.resolve(opts.schemaFile)
-      : path.join(artifactDir, 'event-schema.json');
-    if (!fs.existsSync(schemaFile)) {
-      console.log(`\n⚠️  Upkeep run started, but ${schemaFile} is missing.`);
-      const next = suggestScenarioNextCommand(artifactDir, 'upkeep');
-      if (next) {
-        console.log(`   Next step: ${next}`);
-      }
-      return;
-    }
 
     const baselineFile = opts.baselineSchema?.trim()
       ? path.resolve(opts.baselineSchema)
@@ -2898,41 +3559,197 @@ program
       console.log('   Provide --baseline-schema <file>, or confirm a previous schema first.');
       return;
     }
+    const baselineSchema = readJsonFile<EventSchema>(baselineFile);
+
+    const analysisFile = path.join(artifactDir, 'site-analysis.json');
+    const previousAnalysis = tryReadJsonFile<SiteAnalysis>(analysisFile);
+    let siteAnalysis = previousAnalysis;
+
+    const recrawlUrl = opts.url?.trim();
+    if (recrawlUrl) {
+      const partialUrls = opts.urls
+        ? opts.urls.split(',').map(value => value.trim()).filter(Boolean)
+        : [];
+      if (partialUrls.length > CRAWL_MAX_PARTIAL_URLS) {
+        console.error(`\n❌ Partial crawl URLs exceed limit (${CRAWL_MAX_PARTIAL_URLS}).`);
+        process.exit(1);
+      }
+      const storefrontPassword = opts.storefrontPassword?.trim() || process.env.SHOPIFY_STOREFRONT_PASSWORD?.trim();
+      let recrawled: SiteAnalysis;
+      try {
+        recrawled = await analyzeSite(
+          recrawlUrl,
+          partialUrls.length > 0
+            ? { mode: 'partial', urls: partialUrls, storefrontPassword }
+            : { mode: 'full', storefrontPassword },
+        );
+      } catch (error) {
+        console.error(`\n❌ Failed to re-crawl site during upkeep: ${(error as Error).message}`);
+        process.exit(1);
+      }
+      siteAnalysis = carryForwardPageGroups({
+        analysis: recrawled,
+        previousAnalysis,
+      });
+      writeArtifactJsonFile({
+        artifactDir,
+        file: analysisFile,
+        value: siteAnalysis,
+        stage: 'upkeep_reanalyze',
+      });
+      refreshAndIndexWorkflowState(artifactDir, undefined, {
+        siteUrl: siteAnalysis.rootUrl,
+        scenario: 'upkeep',
+      });
+    } else if (siteAnalysis) {
+      writeArtifactJsonFile({
+        artifactDir,
+        file: analysisFile,
+        value: siteAnalysis,
+        stage: 'upkeep_refresh',
+      });
+    }
+
+    if (!siteAnalysis) {
+      siteAnalysis = {
+        rootUrl: baselineSchema.siteUrl,
+        rootDomain: (() => {
+          try {
+            return new URL(baselineSchema.siteUrl).hostname;
+          } catch {
+            return '';
+          }
+        })(),
+        platform: makeGenericPlatform(),
+        pages: [],
+        pageGroups: [],
+        discoveredUrls: [],
+        skippedUrls: [],
+        crawlWarnings: [
+          'Upkeep run created a placeholder site-analysis.json because no current analysis was available.',
+        ],
+        dataLayerEvents: [],
+        gtmPublicIds: [],
+      };
+      writeArtifactJsonFile({
+        artifactDir,
+        file: analysisFile,
+        value: siteAnalysis,
+        stage: 'upkeep_refresh',
+      });
+    }
+
+    const schemaFile = opts.schemaFile?.trim()
+      ? path.resolve(opts.schemaFile)
+      : path.join(artifactDir, 'event-schema.json');
+    const currentSchema = fs.existsSync(schemaFile)
+      ? readJsonFile<EventSchema>(schemaFile)
+      : cloneSchemaAsCurrentRecommendation(baselineSchema, siteAnalysis.rootUrl);
+    writeArtifactJsonFile({
+      artifactDir,
+      file: schemaFile,
+      value: currentSchema,
+      stage: 'upkeep_refresh',
+    });
 
     const healthFile = opts.healthFile?.trim()
       ? path.resolve(opts.healthFile)
       : path.join(artifactDir, TRACKING_HEALTH_FILE);
-    const currentSchema = readJsonFile<EventSchema>(schemaFile);
-    const baselineSchema = readJsonFile<EventSchema>(baselineFile);
+    const previewResultFile = path.join(artifactDir, 'preview-result.json');
     const schemaComparisonFile = path.join(artifactDir, 'upkeep-schema-comparison-report.md');
     const previewFile = path.join(artifactDir, 'upkeep-preview-report.md');
     const recommendationFile = path.join(artifactDir, 'upkeep-next-step-recommendation.md');
-    generateUpkeepArtifacts({
+
+    if (hasLiveGtmForVerification({ analysis: siteAnalysis })) {
+      const shouldRunLiveVerification = await confirmOptionalLiveVerification({
+        withLiveVerification: opts.withLiveVerification,
+        skipLiveVerification: opts.skipLiveVerification,
+        siteUrl: siteAnalysis.rootUrl,
+      });
+      if (shouldRunLiveVerification) {
+        try {
+          const resolvedLiveAnalysis = await resolveLiveGtmAnalysisForVerification({
+            artifactDir,
+            analysis: siteAnalysis,
+            allowPrimarySelection: true,
+          });
+          const liveVerification = await runAndPersistLiveVerification({
+            artifactDir,
+            analysis: siteAnalysis,
+            liveAnalysis: resolvedLiveAnalysis.liveAnalysis,
+          });
+          console.log(`\nPublished live GTM verification completed before upkeep summary.`);
+          console.log(`- Result: ${liveVerification.resultFile}`);
+          console.log(`- Report: ${liveVerification.reportFile}`);
+          console.log(`- Health: ${liveVerification.healthFile}`);
+        } catch (error) {
+          console.log(`\n⚠️  Published live GTM verification was skipped: ${(error as Error).message}`);
+        }
+      }
+    }
+
+    const upkeepArtifacts = generateUpkeepArtifacts({
       artifactDir,
       currentSchema,
       baselineSchema,
       healthFile,
+      previewResultFile,
       schemaComparisonFile,
       previewFile,
       recommendationFile,
     });
+    refreshAndIndexWorkflowState(artifactDir, undefined, {
+      siteUrl: siteAnalysis.rootUrl,
+      scenario: 'upkeep',
+    });
 
     console.log(`\n✅ Upkeep template completed.`);
-    console.log(`   Scenario: upkeep`);
-    console.log(`   Schema comparison: ${schemaComparisonFile}`);
-    console.log(`   Preview summary: ${previewFile}`);
-    console.log(`   Recommendation: ${recommendationFile}`);
+    console.log(renderUpkeepSummary({
+      currentSchema,
+      baselineSchema,
+      diff: upkeepArtifacts.diff,
+      previewAssessment: upkeepArtifacts.previewAssessment,
+      nextStep: upkeepArtifacts.nextStep,
+      health: upkeepArtifacts.health,
+      previewResult: upkeepArtifacts.previewResult,
+      evidenceSource: upkeepArtifacts.evidenceSource,
+    }));
+    printFilesSection('Files', [
+      ['Scenario', 'upkeep'],
+      ['Site analysis', analysisFile],
+      ['Current schema', schemaFile],
+      ['Baseline schema', baselineFile],
+      ['Schema comparison', schemaComparisonFile],
+      ['Preview summary', previewFile],
+      ['Recommendation', recommendationFile],
+      ['Workflow state', path.join(artifactDir, WORKFLOW_STATE_FILE)],
+    ]);
   });
 
 program
   .command('run-health-audit <artifact-path>')
-  .description('Scenario template: start Tracking Health Audit run and generate audit deliverables when inputs are ready')
-  .option('--schema-file <file>', 'Path to candidate event-schema.json (default: <artifact-dir>/event-schema.json)')
-  .option('--live-gtm-analysis <file>', 'Path to live-gtm-analysis.json (default: <artifact-dir>/live-gtm-analysis.json)')
+  .description('Scenario template: crawl current site, audit live tracking, and generate health-audit deliverables')
+  .option('--url <url>', 'Site URL to crawl for this health audit run')
+  .option('--urls <list>', `Partial crawl URLs (comma-separated, max ${CRAWL_MAX_PARTIAL_URLS})`)
+  .option(
+    '--storefront-password <password>',
+    'Optional Shopify storefront password for crawling protected storefront pages',
+  )
+  .option('--schema-file <file>', 'Output path for candidate event-schema.json (default: <artifact-dir>/event-schema.json)')
+  .option('--gtm-id <ids>', 'Comma-separated GTM public IDs to analyze instead of crawl-detected IDs')
+  .option('--primary-container-id <id>', 'Primary live GTM container for comparison baseline')
+  .option('--with-live-verification', 'Run published live GTM verification before generating the audit summary')
+  .option('--skip-live-verification', 'Skip the published live GTM verification prompt even when live GTM is detected')
   .option('--input-scope <scope>', 'Optional free-form input scope note for this run')
-  .action((artifactPath: string, opts: {
+  .action(async (artifactPath: string, opts: {
+    url?: string;
+    urls?: string;
+    storefrontPassword?: string;
     schemaFile?: string;
-    liveGtmAnalysis?: string;
+    gtmId?: string;
+    primaryContainerId?: string;
+    withLiveVerification?: boolean;
+    skipLiveVerification?: boolean;
     inputScope?: string;
   }) => {
     const artifactDir = resolveArtifactDirFromInput(artifactPath);
@@ -2952,42 +3769,264 @@ program
       inputScope,
     });
 
-    const schemaFile = opts.schemaFile?.trim()
+    const legacySchemaFile = opts.schemaFile?.trim()
       ? path.resolve(opts.schemaFile)
       : path.join(artifactDir, 'event-schema.json');
-    const liveAnalysisFile = opts.liveGtmAnalysis?.trim()
-      ? path.resolve(opts.liveGtmAnalysis)
-      : path.join(artifactDir, 'live-gtm-analysis.json');
-    if (!fs.existsSync(schemaFile) || !fs.existsSync(liveAnalysisFile)) {
-      console.log(`\n⚠️  Tracking Health Audit run started, but required files are missing.`);
-      console.log(`   - schema: ${fs.existsSync(schemaFile) ? 'present' : 'missing'} (${schemaFile})`);
-      console.log(`   - live-gtm-analysis: ${fs.existsSync(liveAnalysisFile) ? 'present' : 'missing'} (${liveAnalysisFile})`);
-      const next = suggestScenarioNextCommand(artifactDir, 'tracking_health_audit');
-      if (next) {
-        console.log(`   Next step: ${next}`);
+    const legacyLiveAnalysisFile = path.join(artifactDir, 'live-gtm-analysis.json');
+    const explicitUrl = opts.url?.trim();
+    if (!explicitUrl && fs.existsSync(legacySchemaFile) && fs.existsSync(legacyLiveAnalysisFile)) {
+      const schema = readJsonFile<EventSchema>(legacySchemaFile);
+      const liveAnalysis = readJsonFile<LiveGtmAnalysis>(legacyLiveAnalysisFile);
+      const analysis = tryReadJsonFile<SiteAnalysis>(path.join(artifactDir, 'site-analysis.json')) || ensurePageGroupsForHealthAudit({
+        rootUrl: schema.siteUrl,
+        rootDomain: (() => {
+          try {
+            return new URL(schema.siteUrl).hostname;
+          } catch {
+            return '';
+          }
+        })(),
+        platform: makeGenericPlatform(),
+        pages: [],
+        pageGroups: [],
+        discoveredUrls: [],
+        skippedUrls: [],
+        crawlWarnings: ['Legacy health-audit mode used existing files without a fresh crawl.'],
+        dataLayerEvents: [],
+        gtmPublicIds: [],
+      });
+      const schemaGapFile = path.join(artifactDir, 'tracking-health-schema-gap-report.md');
+      const previewFile = path.join(artifactDir, 'tracking-health-preview-report.md');
+      const recommendationFile = path.join(artifactDir, 'tracking-health-next-step-recommendation.md');
+      if (hasLiveGtmForVerification({ analysis, liveAnalysis })) {
+        const shouldRunLiveVerification = analysis.pages.length > 0 && await confirmOptionalLiveVerification({
+          withLiveVerification: opts.withLiveVerification,
+          skipLiveVerification: opts.skipLiveVerification,
+          siteUrl: analysis.rootUrl,
+        });
+        if (shouldRunLiveVerification) {
+          try {
+            const liveVerification = await runAndPersistLiveVerification({
+              artifactDir,
+              analysis,
+              liveAnalysis,
+            });
+            console.log(`\nPublished live GTM verification completed before audit summary.`);
+            console.log(`- Result: ${liveVerification.resultFile}`);
+            console.log(`- Report: ${liveVerification.reportFile}`);
+            console.log(`- Health: ${liveVerification.healthFile}`);
+          } catch (error) {
+            console.log(`\n⚠️  Published live GTM verification was skipped: ${(error as Error).message}`);
+          }
+        } else if (analysis.pages.length === 0 && opts.withLiveVerification) {
+          console.log('\n⚠️  Published live GTM verification was skipped because this legacy artifact does not include crawled pages.');
+        }
       }
+      const auditArtifacts = generateHealthAuditArtifacts({
+        artifactDir,
+        schema,
+        analysis,
+        liveAnalysis,
+        schemaGapFile,
+        previewFile,
+        recommendationFile,
+      });
+      refreshAndIndexWorkflowState(artifactDir, undefined, {
+        siteUrl: schema.siteUrl,
+        scenario: 'tracking_health_audit',
+        subScenario: 'none',
+        inputScope,
+      });
+      console.log(`\n✅ Tracking Health Audit template completed (legacy input mode).`);
+      const evidence = readAutomationEvidence({ artifactDir });
+      console.log(renderAuditSummary({
+        schema,
+        analysis,
+        baseline: auditArtifacts.baseline,
+        liveDelta: auditArtifacts.liveDelta,
+        gapSummary: auditArtifacts.gapSummary,
+        previewSummary: auditArtifacts.previewSummary,
+        recommendation: auditArtifacts.recommendation,
+        health: evidence.health,
+        previewResult: evidence.previewResult,
+        evidenceSource: evidence.source,
+      }));
+      printFilesSection('Files', [
+        ['Scenario', 'tracking_health_audit'],
+        ['Candidate schema', legacySchemaFile],
+        ['Live baseline', legacyLiveAnalysisFile],
+        ['Schema gap report', schemaGapFile],
+        ['Preview summary', previewFile],
+        ['Recommendation', recommendationFile],
+        ['Workflow state', path.join(artifactDir, WORKFLOW_STATE_FILE)],
+      ]);
+      console.log('\nNote: pass --url to force a fresh crawl-first health audit.');
       return;
     }
 
-    const schema = readJsonFile<EventSchema>(schemaFile);
-    const liveAnalysis = readJsonFile<LiveGtmAnalysis>(liveAnalysisFile);
+    const partialUrls = opts.urls
+      ? opts.urls.split(',').map(value => value.trim()).filter(Boolean)
+      : [];
+    if (partialUrls.length > CRAWL_MAX_PARTIAL_URLS) {
+      console.error(`\n❌ Partial crawl URLs exceed limit (${CRAWL_MAX_PARTIAL_URLS}).`);
+      process.exit(1);
+    }
+
+    const existingAnalysis = tryReadJsonFile<SiteAnalysis>(path.join(artifactDir, 'site-analysis.json'));
+    const targetUrl = explicitUrl || existingAnalysis?.rootUrl;
+    if (!targetUrl) {
+      console.error('\n❌ Health audit requires a site URL.');
+      console.error('   Provide --url <site-url> or ensure site-analysis.json already exists with rootUrl.');
+      process.exit(1);
+    }
+
+    const storefrontPassword = opts.storefrontPassword?.trim() || process.env.SHOPIFY_STOREFRONT_PASSWORD?.trim();
+    let siteAnalysis: SiteAnalysis;
+    try {
+      siteAnalysis = await analyzeSite(
+        targetUrl,
+        partialUrls.length > 0
+          ? { mode: 'partial', urls: partialUrls, storefrontPassword }
+          : { mode: 'full', storefrontPassword },
+      );
+    } catch (error) {
+      console.error(`\n❌ Failed to crawl site for health audit: ${(error as Error).message}`);
+      process.exit(1);
+    }
+
+    siteAnalysis = ensurePageGroupsForHealthAudit(siteAnalysis);
+    const analysisFile = path.join(artifactDir, 'site-analysis.json');
+    writeArtifactJsonFile({
+      artifactDir,
+      file: analysisFile,
+      value: siteAnalysis,
+      stage: 'tracking_health_audit_analyze',
+    });
+
+    const liveIds = getRequiredLiveGtmIds(siteAnalysis, opts.gtmId);
+    let liveAnalysis: LiveGtmAnalysis;
+    if (liveIds.length > 0) {
+      liveAnalysis = await analyzeLiveGtmContainers({
+        siteUrl: siteAnalysis.rootUrl,
+        publicIds: liveIds,
+      });
+
+      const requestedPrimaryId = opts.primaryContainerId?.trim().toUpperCase();
+      if (requestedPrimaryId && liveAnalysis.containers.some(container => container.publicId === requestedPrimaryId)) {
+        liveAnalysis.primaryContainerId = requestedPrimaryId;
+      } else {
+        const meaningfulContainers = liveAnalysis.containers.filter(container =>
+          container.events.length > 0 || container.measurementIds.length > 0,
+        );
+        liveAnalysis.primaryContainerId = meaningfulContainers[0]?.publicId || liveAnalysis.containers[0]?.publicId || null;
+      }
+    } else {
+      liveAnalysis = {
+        siteUrl: siteAnalysis.rootUrl,
+        analyzedAt: new Date().toISOString(),
+        detectedContainerIds: [],
+        primaryContainerId: null,
+        containers: [],
+        aggregatedEvents: [],
+        warnings: ['No GTM public IDs were detected during crawl; live baseline is empty.'],
+      };
+    }
+
+    const liveAnalysisFile = path.join(artifactDir, 'live-gtm-analysis.json');
+    const liveReviewFile = path.join(artifactDir, 'live-gtm-review.md');
+    writeArtifactJsonFile({
+      artifactDir,
+      file: liveAnalysisFile,
+      value: liveAnalysis,
+      stage: 'tracking_health_audit_live_baseline',
+    });
+    writeArtifactTextFile({
+      artifactDir,
+      file: liveReviewFile,
+      content: generateLiveGtmReviewMarkdown(liveAnalysis),
+      stage: 'tracking_health_audit_live_baseline',
+    });
+
+    const schemaFile = opts.schemaFile?.trim()
+      ? path.resolve(opts.schemaFile)
+      : path.join(artifactDir, 'event-schema.json');
+    const schema = buildHealthAuditRecommendedSchema({
+      analysis: siteAnalysis,
+      liveAnalysis,
+    });
+    writeArtifactJsonFile({
+      artifactDir,
+      file: schemaFile,
+      value: schema,
+      stage: 'tracking_health_audit_schema',
+    });
+
     const schemaGapFile = path.join(artifactDir, 'tracking-health-schema-gap-report.md');
     const previewFile = path.join(artifactDir, 'tracking-health-preview-report.md');
     const recommendationFile = path.join(artifactDir, 'tracking-health-next-step-recommendation.md');
-    generateHealthAuditArtifacts({
+    if (hasLiveGtmForVerification({ analysis: siteAnalysis, liveAnalysis, gtmIdOverride: opts.gtmId })) {
+      const shouldRunLiveVerification = await confirmOptionalLiveVerification({
+        withLiveVerification: opts.withLiveVerification,
+        skipLiveVerification: opts.skipLiveVerification,
+        siteUrl: siteAnalysis.rootUrl,
+      });
+      if (shouldRunLiveVerification) {
+        try {
+          const liveVerification = await runAndPersistLiveVerification({
+            artifactDir,
+            analysis: siteAnalysis,
+            liveAnalysis,
+          });
+          console.log(`\nPublished live GTM verification completed before audit summary.`);
+          console.log(`- Result: ${liveVerification.resultFile}`);
+          console.log(`- Report: ${liveVerification.reportFile}`);
+          console.log(`- Health: ${liveVerification.healthFile}`);
+        } catch (error) {
+          console.log(`\n⚠️  Published live GTM verification was skipped: ${(error as Error).message}`);
+        }
+      }
+    }
+    const auditArtifacts = generateHealthAuditArtifacts({
       artifactDir,
       schema,
+      analysis: siteAnalysis,
       liveAnalysis,
       schemaGapFile,
       previewFile,
       recommendationFile,
     });
+    refreshAndIndexWorkflowState(artifactDir, undefined, {
+      siteUrl: siteAnalysis.rootUrl,
+      scenario: 'tracking_health_audit',
+      subScenario: 'none',
+      inputScope,
+    });
 
     console.log(`\n✅ Tracking Health Audit template completed.`);
-    console.log(`   Scenario: tracking_health_audit`);
-    console.log(`   Schema gap report: ${schemaGapFile}`);
-    console.log(`   Preview summary: ${previewFile}`);
-    console.log(`   Recommendation: ${recommendationFile}`);
+    const evidence = readAutomationEvidence({ artifactDir });
+    console.log(renderAuditSummary({
+      schema,
+      analysis: siteAnalysis,
+      baseline: auditArtifacts.baseline,
+      liveDelta: auditArtifacts.liveDelta,
+      gapSummary: auditArtifacts.gapSummary,
+      previewSummary: auditArtifacts.previewSummary,
+      recommendation: auditArtifacts.recommendation,
+      health: evidence.health,
+      previewResult: evidence.previewResult,
+      evidenceSource: evidence.source,
+    }));
+    printFilesSection('Files', [
+      ['Scenario', 'tracking_health_audit'],
+      ['Site analysis', analysisFile],
+      ['Live baseline', liveAnalysisFile],
+      ['Candidate schema', schemaFile],
+      ['Schema gap report', schemaGapFile],
+      ['Preview summary', previewFile],
+      ['Recommendation', recommendationFile],
+      ['Workflow state', path.join(artifactDir, WORKFLOW_STATE_FILE)],
+    ]);
+    console.log('\nNote: gtm-config.json is not generated in tracking_health_audit.');
   });
 
 program.parseAsync(process.argv).catch(err => {

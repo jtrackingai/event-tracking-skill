@@ -16,6 +16,22 @@ One of:
 
 ## Workflow
 
+## Role And Quality Bar
+
+During schema work, act as an expert in event tracking design.
+
+Your job is not to list generic events. Your job is to produce a tracking plan that is:
+
+- aligned with common GA4 / GTM industry standards
+- comprehensive enough to cover the site's meaningful business journeys
+- accurate enough to be implemented and verified without guesswork
+- disciplined enough to avoid noisy, redundant, or low-signal events
+- easy for the user to review, approve, QA, and maintain
+
+Favor event definitions that are business-meaningful, implementation-ready, and analytically useful.
+Do not preserve weak legacy patterns just for continuity.
+Do not inflate the schema with events that add little reporting or decision value.
+
 If schema context is not prepared yet:
 
 ```bash
@@ -38,8 +54,8 @@ During review:
 
 - explain what live tracking problems the schema fixes when `live-gtm-analysis.json` is present
 - explain what benefits the new schema brings compared with the current live baseline
-- show the event list
-- show grouped parameter tables per event
+- default to a compact tracking-plan summary in this order: `Event Table`, `Common Properties`, `Event-specific Properties`
+- keep long parameter inventories out of the main event table
 - stop for user approval before GTM generation
 
 ## Required Output
@@ -52,6 +68,13 @@ Produce and share:
 - `<artifact-dir>/schema-decisions.jsonl` after schema confirmation
 - `<artifact-dir>/schema-restore/` restore snapshots after schema confirmation
 - updated `<artifact-dir>/workflow-state.json`
+
+## Closeout Style
+
+- default to a decision-ready tracking-plan summary before listing files
+- keep the chat structure in this order: `Event Table`, `Common Properties`, `Event-specific Properties`
+- if a live baseline comparison exists, keep it as a compact appendix rather than replacing the tracking-plan structure
+- list files and next steps only after the summary
 
 ## Stop Boundary
 

@@ -1,6 +1,6 @@
 ---
 name: event-tracking-skill
-description: End-to-end GA4 + GTM tracking skill for site analysis, page grouping, schema design, GTM sync, preview QA, and publish readiness across generic sites and Shopify.
+description: Use when you need end-to-end GA4 + GTM tracking delivery across discovery, schema, sync, and verification phases.
 ---
 
 # Event Tracking Skill
@@ -123,11 +123,12 @@ When resuming:
 
 When a phase or the full workflow ends, summarize:
 
-- artifact directory
-- current checkpoint from `workflow-state.json`
-- key output files from the completed phase
-- next recommended command, if any
-- remaining manual actions, especially for custom dimensions, Shopify install, tracking health, preview QA, or publish approval
+- first give a compact, decision-ready summary in plain language
+- keep the default chat summary human-readable; do not dump raw JSON, raw URL lists, or artifact inventory first
+- for page grouping, summarize group count, grouping logic, and a compact group table before any file references
+- for schema review, default to `Event Table`, then `Common Properties`, then `Event-specific Properties`
+- keep `tracking_health_audit` and `upkeep` as separate summary modes even if they share rendering helpers
+- only after the summary, list artifact directory, current checkpoint, key output files, next recommended command, and remaining manual actions
 
 ## References
 

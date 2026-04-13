@@ -19,6 +19,9 @@ At the same time, each write is snapshotted into `versions/<run-id>/...` so hist
 | `site-analysis.json` | Raw page structure from Playwright crawl — pages, interactive elements, page groups, and page-group confirmation metadata |
 | `live-gtm-analysis.json` | Parsed summary of the site's real public GTM runtime, including existing live events, parameters, trigger hints, and the primary comparison container |
 | `live-gtm-review.md` | Human-readable audit of the live GTM baseline and container comparison |
+| `live-preview-result.json` | Raw published-live verification intercept data captured from the site's existing GTM setup, including unexpected fired events outside the parsed live-event baseline |
+| `live-preview-report.md` | Human-readable published-live verification report for existing GTM tags |
+| `live-tracking-health.json` | Machine-readable health verdict for published-live GTM verification; kept separate from workspace/schema preview health |
 | `schema-context.json` | Compressed crawl data for AI event generation (auto-generated, do not edit) |
 | `shopify-schema-template.json` | Shopify-only baseline event schema template generated during `prepare-schema`; use as the starting point for ecommerce custom events |
 | `shopify-bootstrap-review.md` | Shopify-only human-readable review of baseline and inferred bootstrap events, including why each one was included and whether it should be kept, reviewed manually, or removed |
@@ -28,11 +31,11 @@ At the same time, each write is snapshotted into `versions/<run-id>/...` so hist
 | `tracking-update-change-summary.md` | Business-friendly Tracking Update change summary for stakeholder communication |
 | `tracking-plan-comparison.md` | Human-readable comparison of existing live GTM tracking vs the generated event plan, including optimization points, expected benefits, and legacy issues; generated when `live-gtm-analysis.json` is present |
 | `upkeep-schema-comparison-report.md` | Upkeep schema comparison summary (current recommendation vs baseline schema) |
-| `upkeep-preview-report.md` | Upkeep preview summary focused on failures, drift, and unexpected events |
-| `upkeep-next-step-recommendation.md` | Upkeep recommendation that routes into Tracking Update when needed |
-| `tracking-health-schema-gap-report.md` | Tracking Health Audit schema-vs-live gap report for first-pass health assessment |
-| `tracking-health-preview-report.md` | Tracking Health Audit preview summary (optional preview path noted) |
-| `tracking-health-next-step-recommendation.md` | Tracking Health Audit recommendation, typically suggesting optional move to New Setup |
+| `upkeep-preview-report.md` | Upkeep preview summary with `healthy`, `failure`, `drift`, and `not_observable` status buckets |
+| `upkeep-next-step-recommendation.md` | Upkeep recommendation that states whether to enter Tracking Update and whether it is `new_requests`, `legacy_maintenance`, or `both` |
+| `tracking-health-schema-gap-report.md` | Tracking Health Audit schema-vs-live gap report with `missing_event`, `missing_parameter`, `weak_naming`, `partial_coverage`, and `high_value_page_gap` classifications |
+| `tracking-health-preview-report.md` | Tracking Health Audit preview/validation summary with `healthy`, `failure`, and `not_observable` classifications |
+| `tracking-health-next-step-recommendation.md` | Tracking Health Audit recommendation with explicit `Enter New Setup: yes/no` decision |
 | `schema-decisions.jsonl` | Append-only schema confirmation audit, including added, changed, removed, and unchanged events compared with the previous confirmed snapshot when available |
 | `schema-restore/` | Restore snapshots of confirmed `event-schema.json` versions, keyed by schema hash |
 | `.event-tracking-run.json` | Run-context metadata for output-root recovery and run indexing |
@@ -82,6 +85,7 @@ If `site-analysis.json` detected real GTM public IDs, run `./event-tracking anal
 - Re-run `confirm-schema` after editing `event-schema.json`
 - Re-run `sync` to push a corrected config. Stale `[JTracking]` managed entities are cleaned automatically.
 - Re-run `preview` after sync to re-verify
+- Run `./event-tracking verify-live-gtm <artifact-dir>/site-analysis.json` when you want best-effort verification of the currently published GTM setup without entering GTM workspace preview mode
 - Use `./event-tracking preview ... --baseline <previous-tracking-health.json>` to compare a new preview run with an older tracking health baseline. If omitted, an existing `tracking-health.json` in the same artifact directory is used as the baseline before it is overwritten.
 - `publish` now requires a current non-blocking `tracking-health.json`; use `--force` only when you intentionally want to override a missing or blocked verification state.
 - For Shopify sites, re-install `shopify-custom-pixel.js` after re-syncing to a different GTM container
@@ -92,6 +96,7 @@ If `site-analysis.json` detected real GTM public IDs, run `./event-tracking anal
 - Use scenario template commands when you want scenario-oriented guidance/execution under a new scenario run: `run-new-setup`, `run-tracking-update`, `run-upkeep`, `run-health-audit`
 - Scenario check requirements are configurable in `src/workflow/scenario-requirements.json`
 - In scenario `tracking_health_audit`, deployment commands (`generate-gtm`, `sync`, `publish`) are blocked by default because this scenario is audit-only
+- `run-health-audit` should not produce `gtm-config.json`; this scenario is assessment-only
 - Reporting commands are also scenario-gated (for example `generate-upkeep-report` is intended for `upkeep`, and `generate-health-audit-report` is intended for `tracking_health_audit`)
 
 ## Directory Example
@@ -103,6 +108,9 @@ Example:
   site-analysis.json
   live-gtm-analysis.json
   live-gtm-review.md
+  live-preview-result.json
+  live-preview-report.md
+  live-tracking-health.json
   event-schema.json
   event-schema-diff-report.md
   tracking-update-change-summary.md

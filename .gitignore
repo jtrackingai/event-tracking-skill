@@ -7,3 +7,4 @@ output/
 credentials/credentials.json
 src/gtm/client_secrets.json
 **/credentials.json
+.event-tracking-runs.jsonl

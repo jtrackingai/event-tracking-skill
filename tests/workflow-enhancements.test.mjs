@@ -38,6 +38,11 @@ const {
 } = require(path.join(repoRoot, 'dist', 'workflow', 'scenario-transition.js'));
 const { refreshWorkflowState } = require(path.join(repoRoot, 'dist', 'workflow', 'state.js'));
 const { getPageGroupsHash } = require(path.join(repoRoot, 'dist', 'crawler', 'page-analyzer.js'));
+const {
+  buildLiveVerificationSchema,
+  LIVE_PREVIEW_RESULT_FILE,
+  LIVE_TRACKING_HEALTH_FILE,
+} = require(path.join(repoRoot, 'dist', 'gtm', 'live-verifier.js'));
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'event-tracking-workflow-enhancements-'));
@@ -226,6 +231,9 @@ test('generate-spec writes tracking-plan-comparison.md when live GTM baseline is
   const result = runCli(['generate-spec', schemaFile]);
   assert.equal(result.status, 0, result.combinedOutput);
   assert.match(result.combinedOutput, /Comparison report:/);
+  assert.match(result.combinedOutput, /A\. Event Table/);
+  assert.match(result.combinedOutput, /B\. Common Properties/);
+  assert.match(result.combinedOutput, /C\. Event-specific Properties/);
 
   const comparisonFile = path.join(artifactDir, 'tracking-plan-comparison.md');
   assert.ok(fs.existsSync(comparisonFile), 'comparison report should be generated');
@@ -467,9 +475,67 @@ test('generate-upkeep-report writes upkeep deliverables', t => {
     baselineFile,
   ]);
   assert.equal(result.status, 0, result.combinedOutput);
-  assert.ok(fs.existsSync(path.join(artifactDir, 'upkeep-schema-comparison-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'upkeep-preview-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'upkeep-next-step-recommendation.md')));
+  assert.match(result.combinedOutput, /A\. Current tracking health summary/);
+  assert.match(result.combinedOutput, /B\. Current vs baseline comparison/);
+  assert.match(result.combinedOutput, /C\. Next-step guidance/);
+  assert.ok(
+    result.combinedOutput.indexOf('A. Current tracking health summary') < result.combinedOutput.indexOf('Files'),
+    result.combinedOutput,
+  );
+  const schemaComparisonFile = path.join(artifactDir, 'upkeep-schema-comparison-report.md');
+  const previewFile = path.join(artifactDir, 'upkeep-preview-report.md');
+  const recommendationFile = path.join(artifactDir, 'upkeep-next-step-recommendation.md');
+  assert.ok(fs.existsSync(schemaComparisonFile));
+  assert.ok(fs.existsSync(previewFile));
+  assert.ok(fs.existsSync(recommendationFile));
+  const previewContent = fs.readFileSync(previewFile, 'utf8');
+  const recommendationContent = fs.readFileSync(recommendationFile, 'utf8');
+  assert.match(previewContent, /healthy:/);
+  assert.match(previewContent, /failure:/);
+  assert.match(previewContent, /drift:/);
+  assert.match(previewContent, /not_observable:/);
+  assert.match(recommendationContent, /Tracking Update required: yes/);
+  assert.match(recommendationContent, /Tracking Update type: both/);
+});
+
+test('generate-upkeep-report falls back to live GTM verification evidence when tracking-health.json is missing', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const baselineFile = path.join(artifactDir, 'baseline-event-schema.json');
+  const currentFile = path.join(artifactDir, 'event-schema.json');
+  writeJson(baselineFile, makeEventSchema([makeEvent('signup_click')]));
+  writeJson(currentFile, makeEventSchema([makeEvent('signup_click')]));
+  writeJson(path.join(artifactDir, LIVE_TRACKING_HEALTH_FILE), makeTrackingHealthReport({
+    grade: 'good',
+    score: 88,
+    blockers: [],
+    eventStatus: [
+      { eventName: 'signup_click', fired: true, priority: 'high' },
+    ],
+  }));
+  writeJson(path.join(artifactDir, LIVE_PREVIEW_RESULT_FILE), {
+    siteUrl: 'https://example.com',
+    previewStartedAt: '2026-04-08T00:00:00.000Z',
+    previewEndedAt: '2026-04-08T00:01:00.000Z',
+    gtmContainerId: 'GTM-TEST123',
+    results: [],
+    totalSchemaEvents: 1,
+    totalExpected: 1,
+    totalFired: 1,
+    totalFailed: 0,
+    redundantAutoEventsSkipped: 0,
+    unexpectedFiredEvents: [],
+  });
+
+  const result = runCli([
+    'generate-upkeep-report',
+    currentFile,
+    '--baseline-schema',
+    baselineFile,
+  ]);
+  assert.equal(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, /Formal live GTM verification verdict available/);
 });
 
 test('generate-health-audit-report writes audit deliverables from live GTM baseline', t => {
@@ -491,9 +557,108 @@ test('generate-health-audit-report writes audit deliverables from live GTM basel
     liveFile,
   ]);
   assert.equal(result.status, 0, result.combinedOutput);
-  assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-schema-gap-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-preview-report.md')));
-  assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-next-step-recommendation.md')));
+  assert.match(result.combinedOutput, /A\. Legacy \/ live tracking summary/);
+  assert.match(result.combinedOutput, /Current audit run has no formal preview-verified automation evidence/);
+  assert.match(result.combinedOutput, /`signup_click`/);
+  assert.match(result.combinedOutput, /`pricing_click`/);
+  assert.ok(
+    result.combinedOutput.indexOf('A. Legacy / live tracking summary') < result.combinedOutput.indexOf('Files'),
+    result.combinedOutput,
+  );
+  const schemaGapFile = path.join(artifactDir, 'tracking-health-schema-gap-report.md');
+  const previewFile = path.join(artifactDir, 'tracking-health-preview-report.md');
+  const recommendationFile = path.join(artifactDir, 'tracking-health-next-step-recommendation.md');
+  assert.ok(fs.existsSync(schemaGapFile));
+  assert.ok(fs.existsSync(previewFile));
+  assert.ok(fs.existsSync(recommendationFile));
+  const schemaGapContent = fs.readFileSync(schemaGapFile, 'utf8');
+  const previewContent = fs.readFileSync(previewFile, 'utf8');
+  const recommendationContent = fs.readFileSync(recommendationFile, 'utf8');
+  assert.match(schemaGapContent, /missing_event:/);
+  assert.match(schemaGapContent, /missing_parameter:/);
+  assert.match(schemaGapContent, /weak_naming:/);
+  assert.match(schemaGapContent, /partial_coverage:/);
+  assert.match(schemaGapContent, /high_value_page_gap:/);
+  assert.match(previewContent, /healthy:/);
+  assert.match(previewContent, /failure:/);
+  assert.match(previewContent, /not_observable:/);
+  assert.match(recommendationContent, /Enter New Setup:/);
+});
+
+test('generate-health-audit-report uses live GTM verification evidence when available', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const schemaFile = path.join(artifactDir, 'event-schema.json');
+  const liveFile = path.join(artifactDir, 'live-gtm-analysis.json');
+  writeJson(schemaFile, makeEventSchema([
+    makeEvent('signup_click'),
+    makeEvent('pricing_click', { priority: 'medium' }),
+  ]));
+  writeJson(liveFile, makeLiveGtmAnalysis());
+  writeJson(path.join(artifactDir, LIVE_TRACKING_HEALTH_FILE), makeTrackingHealthReport({
+    grade: 'good',
+    score: 84,
+    blockers: [],
+    eventStatus: [
+      { eventName: 'signup_click', fired: true, priority: 'high' },
+      { eventName: 'pricing_click', fired: false, priority: 'medium', failureCategory: 'selector_mismatch' },
+    ],
+  }));
+  writeJson(path.join(artifactDir, LIVE_PREVIEW_RESULT_FILE), {
+    siteUrl: 'https://example.com',
+    previewStartedAt: '2026-04-08T00:00:00.000Z',
+    previewEndedAt: '2026-04-08T00:01:00.000Z',
+    gtmContainerId: 'GTM-TEST123',
+    results: [],
+    totalSchemaEvents: 2,
+    totalExpected: 2,
+    totalFired: 1,
+    totalFailed: 1,
+    redundantAutoEventsSkipped: 0,
+    unexpectedFiredEvents: [],
+  });
+
+  const result = runCli([
+    'generate-health-audit-report',
+    schemaFile,
+    '--live-gtm-analysis',
+    liveFile,
+  ]);
+  assert.equal(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, /formal live GTM verification run/);
+  assert.match(result.combinedOutput, /verified in live GTM verification/);
+});
+
+test('buildLiveVerificationSchema keeps automation-friendly live events and skips opaque ones', () => {
+  const build = buildLiveVerificationSchema(makeLiveGtmAnalysis({
+    aggregatedEvents: [
+      {
+        eventName: 'signup_click',
+        containers: ['GTM-TEST123'],
+        measurementIds: ['G-TEST1234'],
+        parameterNames: ['link_text'],
+        triggerTypes: ['click'],
+        selectors: ['button.signup'],
+        urlPatterns: ['^/$'],
+        confidence: 'high',
+      },
+      {
+        eventName: 'opaque_custom_event',
+        containers: ['GTM-TEST123'],
+        measurementIds: ['G-TEST1234'],
+        parameterNames: ['value'],
+        triggerTypes: ['custom'],
+        selectors: [],
+        urlPatterns: [],
+        confidence: 'low',
+      },
+    ],
+  }));
+
+  assert.deepEqual(build.includedEvents, ['signup_click']);
+  assert.equal(build.schema.events[0].triggerType, 'click');
+  assert.equal(build.skippedEvents[0].eventName, 'opaque_custom_event');
 });
 
 test('tracking_health_audit scenario blocks generate-gtm unless force is used', t => {
@@ -625,6 +790,7 @@ test('run-upkeep template starts scenario and writes upkeep deliverables', t => 
   ]);
   assert.equal(result.status, 0, result.combinedOutput);
   assert.match(result.combinedOutput, /Upkeep template completed/);
+  assert.match(result.combinedOutput, /A\. Current tracking health summary/);
 
   const state = readJson(path.join(artifactDir, 'workflow-state.json'));
   assert.equal(state.scenario, 'upkeep');
@@ -664,17 +830,17 @@ test('run-health-audit template starts scenario and writes audit deliverables', 
     artifactDir,
     '--schema-file',
     schemaFile,
-    '--live-gtm-analysis',
-    liveFile,
   ]);
   assert.equal(result.status, 0, result.combinedOutput);
   assert.match(result.combinedOutput, /Tracking Health Audit template completed/);
+  assert.match(result.combinedOutput, /Current audit run has no formal preview-verified automation evidence/);
 
   const state = readJson(path.join(artifactDir, 'workflow-state.json'));
   assert.equal(state.scenario, 'tracking_health_audit');
   assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-schema-gap-report.md')));
   assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-preview-report.md')));
   assert.ok(fs.existsSync(path.join(artifactDir, 'tracking-health-next-step-recommendation.md')));
+  assert.ok(!fs.existsSync(path.join(artifactDir, 'gtm-config.json')));
 });
 
 test('scenario requirements are loaded from configurable mapping', () => {
