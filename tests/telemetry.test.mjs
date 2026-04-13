@@ -32,6 +32,7 @@ test('telemetry sanitizer drops sensitive and unknown fields', () => {
   const params = sanitizeTelemetryParams({
     command_name: 'sync',
     status: 'success',
+    site_hostname: 'customer.example',
     site_url: 'https://customer.example',
     rootDomain: 'customer.example',
     measurement_id: 'G-SECRET123',
@@ -44,6 +45,7 @@ test('telemetry sanitizer drops sensitive and unknown fields', () => {
 
   assert.equal(params.command_name, 'sync');
   assert.equal(params.status, 'success');
+  assert.equal(params.site_hostname, 'customer.example');
   assert.equal(params.site_url, undefined);
   assert.equal(params.rootDomain, undefined);
   assert.equal(params.measurement_id, undefined);

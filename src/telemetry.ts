@@ -33,6 +33,7 @@ const ALLOWED_PARAM_NAMES = new Set([
   'error_type',
   'scenario',
   'checkpoint',
+  'site_hostname',
   'run_mode',
   'page_count',
   'discovered_url_count',
@@ -150,7 +151,7 @@ async function promptForConsent(): Promise<boolean> {
   return new Promise(resolve => {
     process.stderr.write(
       '\nAllow event-tracking-skill to send anonymous usage telemetry? ' +
-      'No URLs, domains, file paths, GTM/GA IDs, selectors, OAuth data, or raw errors are collected. (yes/no): ',
+      'This includes the analyzed site hostname but never full URLs, paths, query strings, file paths, GTM/GA IDs, selectors, OAuth data, or raw errors. (yes/no): ',
     );
     const iface = readline.createInterface({ input: process.stdin, output: process.stderr });
     iface.question('', answer => {

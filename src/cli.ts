@@ -253,6 +253,14 @@ function normalizeTrackingId(id: string | undefined): string | undefined {
   return trimmed.toUpperCase();
 }
 
+function hostnameFromUrl(value: string): string | undefined {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
 function parseScenario(input: string | undefined, fallback: WorkflowScenario): WorkflowScenario {
   const normalized = (input || '').trim().toLowerCase();
   if (!normalized) return fallback;
@@ -1520,6 +1528,7 @@ program
       command_name: 'analyze',
       scenario,
       checkpoint: workflowState.currentCheckpoint,
+      site_hostname: hostnameFromUrl(siteAnalysis.rootUrl),
       status: 'success',
       duration_ms: Date.now() - commandStartedAt,
       run_mode: isPartial ? 'partial' : 'full',
