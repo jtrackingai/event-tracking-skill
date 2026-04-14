@@ -34,7 +34,7 @@ Fast paths:
       Run the full repo setup and install the full skill family.
 
 Options:
-  --target-dir <path>   Install into this directory instead of \$CODEX_HOME/skills or ~/.codex/skills
+  --target-dir <path>   Install into this directory instead of the default agent skills directory
   --skill <name>        Install only the named skill bundle (repeatable)
   --with-phases         Install the full skill family when --skill is not provided
   --mode <copy|link>    Copy bundles into the target directory or link them in place

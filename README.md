@@ -160,9 +160,13 @@ A typical conversation flow is:
 ## Product Boundary
 
 - the workflow runs locally
+- browser-backed steps rely on Playwright Chromium; `npm install` triggers the package `postinstall` step that installs the browser binary
 - GTM sync uses Google OAuth
+- OAuth credentials are cached in the artifact directory for the current site run
 - generic sites use automated preview verification
 - Shopify uses the Shopify-specific branch and manual post-install validation
+- optional anonymous telemetry is opt-in, stores consent in local user config, and can be disabled with `DO_NOT_TRACK=1` or `EVENT_TRACKING_TELEMETRY=0`
+- installed copy bundles can self-check GitHub for updates and reinstall the same selected bundle set
 
 ## Need A More Advanced Setup?
 

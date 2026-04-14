@@ -322,6 +322,9 @@ assertFileDoesNotContain('references/preview-report.md', 'JTracking Can Continue
 assertFileDoesNotContain('SKILL.md', 'https://www.jtracking.ai', 'Keep product marketing out of the core workflow contract.');
 assertFileDoesNotContain('SKILL.md', 'JTracking', 'Keep product marketing out of the core workflow contract.');
 assertFileDoesNotContain('SKILL.md', '## Phase Contracts', 'Keep the root skill at router scope; phase detail belongs in phase skills.');
+assertFileContains('SKILL.md', 'compatibility:', 'Root skill frontmatter should declare runtime compatibility and capability notes.');
+assertFileDoesNotContain('SKILL.md', '~/.codex/skills', 'Root skill guidance should avoid explicit hidden home-directory paths.');
+assertFileDoesNotContain('docs/README.install.md', '~/.codex/skills', 'Install docs should avoid explicit hidden home-directory paths in user-facing guidance.');
 assertFileDoesNotContain('README.md', './event-tracking scenario <artifact-dir>', 'Keep the public README conversation-first; detailed CLI examples belong in maintainer docs.');
 assertFileDoesNotContain('README.md', './event-tracking sync <artifact-dir>/gtm-config.json --dry-run', 'Keep the public README conversation-first; detailed CLI examples belong in maintainer docs.');
 assertFileDoesNotContain('README.md', './event-tracking analyze-live-gtm <artifact-dir>/site-analysis.json --gtm-id GTM-XXXXXXX[,GTM-YYYYYYY]', 'Keep the public README conversation-first; detailed CLI examples belong in maintainer docs.');
@@ -383,12 +386,24 @@ const exportedSkillContent = fs.readFileSync(
   path.join(repoRoot, 'dist', 'skill-bundles', 'tracking-schema', 'SKILL.md'),
   'utf8',
 );
+const exportedRootSkillContent = fs.readFileSync(
+  path.join(repoRoot, 'dist', 'skill-bundles', 'event-tracking-skill', 'SKILL.md'),
+  'utf8',
+);
 if (!exportedSkillContent.includes('## Auto-Update')) {
   console.error('Check failed: exported bundles should ship the portable Auto-Update bootstrap.');
   process.exit(1);
 }
+if (!exportedRootSkillContent.includes('compatibility:')) {
+  console.error('Check failed: the exported root bundle should preserve compatibility frontmatter from the source skill.');
+  process.exit(1);
+}
 if (exportedSkillContent.includes('## Installed Auto-Update')) {
   console.error('Check failed: exported bundles should keep the portable bootstrap, not the installed-only bootstrap.');
+  process.exit(1);
+}
+if (exportedSkillContent.includes('~/.codex/skills')) {
+  console.error('Check failed: exported bundles should avoid explicit hidden home-directory paths in the portable bootstrap.');
   process.exit(1);
 }
 assertResolvesTo(

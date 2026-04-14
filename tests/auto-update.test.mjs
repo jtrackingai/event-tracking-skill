@@ -122,7 +122,10 @@ test('portable root installs can check for updates without install metadata', ()
   fs.writeFileSync(versionFile, '9.9.9\n');
 
   const skillContent = fs.readFileSync(path.join(bundleDir, 'SKILL.md'), 'utf8');
+  assert.match(skillContent, /compatibility:/);
   assert.match(skillContent, /## Auto-Update/);
+  assert.doesNotMatch(skillContent, /~\/\.codex\/skills/);
+  assert.match(skillContent, /configured by your agent environment/);
   assert.equal(fs.existsSync(path.join(bundleDir, '.event-tracking-install.json')), false);
 
   const result = runNode(

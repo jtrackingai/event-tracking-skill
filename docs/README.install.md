@@ -42,7 +42,7 @@ Use `./setup` only when you also want dependencies, the repo-local CLI, and loca
 Today the installer resolves the default target like this:
 
 - `$CODEX_HOME/skills` when `CODEX_HOME` is set
-- otherwise `~/.codex/skills`
+- otherwise the default user-level skills directory for the current agent runtime
 
 If your agent runtime uses a different skills directory, install directly into it:
 

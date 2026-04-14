@@ -1,6 +1,12 @@
 ---
 name: event-tracking-skill
 description: Use when you need end-to-end GA4 + GTM tracking delivery across discovery, schema, sync, and verification phases.
+compatibility: >
+  Requires Node.js 18+, npm, and Playwright Chromium for browser-backed steps.
+  Analyze, selector validation, preview, and GTM sync must run outside sandboxed
+  environments. GTM sync uses interactive Google OAuth and caches credentials in
+  the artifact directory. Optional anonymous telemetry is opt-in and can be
+  disabled with DO_NOT_TRACK=1 or EVENT_TRACKING_TELEMETRY=0.
 ---
 
 # Event Tracking Skill
@@ -22,7 +28,7 @@ This installed root skill can self-check for newer GitHub versions before you co
 
 Before doing any task in this bundle:
 
-1. Resolve the directory that contains this installed `SKILL.md`. Installer-managed copies usually live under a skills directory such as `$CODEX_HOME/skills/event-tracking-skill` or `~/.codex/skills/event-tracking-skill`.
+1. Resolve the directory that contains this installed `SKILL.md`. Installer-managed copies usually live under the skills directory configured by your agent environment, such as `$CODEX_HOME/skills/event-tracking-skill` or an equivalent runtime-managed path.
 2. Run `node "<bundle-dir>/runtime/skill-runtime/update-check.mjs" --json`.
 3. If the result status is `update_available`, immediately run `node "<bundle-dir>/runtime/skill-runtime/self-update.mjs" --apply`.
 4. If the update succeeds, read `<bundle-dir>/SKILL.md` again before continuing so you are using the refreshed instructions.
@@ -48,19 +54,21 @@ Once `site-analysis.json` indicates Shopify, keep discovery and grouping shared,
 
 ## Shared Contract
 
-1. Use the repo-local wrapper `./event-tracking` for CLI commands in this repository. If the wrapper reports that `dist/cli.js` is missing, run `npm run build` first.
+1. Use the repo-local wrapper `./event-tracking` for CLI commands in this repository. If the wrapper reports that `dist/cli.js` is missing, run `npm run build` first. This bundle assumes Node.js 18+, npm, and Playwright Chromium are available for browser-backed commands.
 2. Keep one artifact directory per site (`<output-root>/<url-slug>`). Each iteration inside that artifact should use a distinct run ID with snapshots under `versions/<run-id>/`.
 3. If the user already provides an artifact directory or one of its files, resume from the earliest unmet prerequisite instead of restarting from `analyze`.
 4. Use `./event-tracking status <artifact-dir-or-file>` whenever the current checkpoint or next step is unclear.
 5. Use `./event-tracking runs <output-root>` when the user wants to find recent site runs and does not remember the artifact directory.
 6. Google OAuth client metadata is embedded in the CLI and may be overridden with `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
 7. Any Playwright-backed or OAuth-triggering step must run outside a sandboxed environment by default. In practice, treat `analyze`, `validate-schema --check-selectors`, `preview`, and `sync` as non-sandbox commands, and do not first attempt them in the sandbox before retrying after interception.
-8. Never auto-select a GTM account, GTM container, or GTM workspace on the user's behalf. Always show candidates and require explicit confirmation unless the user already provided the exact ID for that step.
-9. Prefer scenario-first entry commands for user-facing flows: `run-new-setup`, `run-tracking-update`, `run-upkeep`, `run-health-audit`. Use `start-scenario` when the user wants a labeled scenario run without immediate template execution.
-10. Use `./event-tracking scenario <artifact-dir> --set <scenario> [--sub-scenario ...] [--new-run]` for metadata-only adjustments when you should not alter execution flow.
-11. Use `./event-tracking scenario-check <artifact-dir>` when the question is "is this scenario ready" rather than "what is the next workflow checkpoint".
-12. Use `./event-tracking scenario-transition <artifact-dir> --to <scenario> [--reason ...]` when the user wants an auditable handoff between scenarios.
-13. Do not continue past the phase boundary the user asked for. Stop after the requested phase unless the user explicitly asks to continue.
+8. GTM OAuth credentials are cached per artifact at `<artifact-dir>/credentials.json`; local migration code may also clear or import older credential files when the user asks to reuse or clear stored auth.
+9. Anonymous usage telemetry is opt-in. It stores consent in the local user config, never sends full URLs, file paths, selectors, GTM/GA IDs, OAuth data, or raw errors, and is disabled by `DO_NOT_TRACK=1` or `EVENT_TRACKING_TELEMETRY=0`.
+10. Never auto-select a GTM account, GTM container, or GTM workspace on the user's behalf. Always show candidates and require explicit confirmation unless the user already provided the exact ID for that step.
+11. Prefer scenario-first entry commands for user-facing flows: `run-new-setup`, `run-tracking-update`, `run-upkeep`, `run-health-audit`. Use `start-scenario` when the user wants a labeled scenario run without immediate template execution.
+12. Use `./event-tracking scenario <artifact-dir> --set <scenario> [--sub-scenario ...] [--new-run]` for metadata-only adjustments when you should not alter execution flow.
+13. Use `./event-tracking scenario-check <artifact-dir>` when the question is "is this scenario ready" rather than "what is the next workflow checkpoint".
+14. Use `./event-tracking scenario-transition <artifact-dir> --to <scenario> [--reason ...]` when the user wants an auditable handoff between scenarios.
+15. Do not continue past the phase boundary the user asked for. Stop after the requested phase unless the user explicitly asks to continue.
 
 ## Conversation Intake
 
