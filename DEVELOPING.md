@@ -35,7 +35,7 @@ npm run doctor
 | `npm run doctor` | verify Node, built CLI, repo-local wrapper, and Playwright Chromium |
 | `npm run export:skills` | generate self-contained skill bundles under `dist/skill-bundles/` |
 | `npm run install:skills -- [--target-dir <dir>] [--skill <name>] [--mode <copy|link>]` | copy or link exported bundles into an agent skills directory |
-| `npm run check` | rebuild, run automated tests and doctor, smoke-test `./event-tracking --help`, export skill bundles, and validate documented command surface |
+| `npm run check` | rebuild, run automated tests and doctor, smoke-test `./event-tracking --help`, export skill bundles, and validate documented command surface, artifact contract, and local docs links |
 | `npm run dev` | run the CLI through `ts-node` while iterating locally |
 
 ## Change Rules
@@ -59,6 +59,7 @@ Keep these rules stable unless you intentionally want to change the public surfa
 - `VERSION` is the shipped skill-family version for installed bundle update checks and should stay aligned with `package.json`
 - copy installs are the supported auto-update path; link installs are intentionally non-updating
 - skill counts and phase names in docs should stay aligned with `skills/manifest.json`
+- documented command snippets, phase-skill artifacts, and local Markdown links should pass the structural harness checks in `npm run check`
 - artifact filenames in [references/output-contract.md](references/output-contract.md) are part of the public workflow contract
 - `workflow-state.json` is part of the public workflow contract once generated
 - when adding a new workflow step, document its prerequisite artifact and produced artifact explicitly

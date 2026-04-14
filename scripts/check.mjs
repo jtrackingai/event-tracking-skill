@@ -28,6 +28,27 @@ function runStep(label, command, args, options = {}) {
   }
 }
 
+function captureStep(label, command, args, options = {}) {
+  console.log(`==> ${label}`);
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    stdio: 'pipe',
+    encoding: 'utf8',
+    ...options,
+  });
+
+  if (result.status !== 0) {
+    const stdout = result.stdout?.trim();
+    const stderr = result.stderr?.trim();
+    console.error(`Check failed: ${label}`);
+    if (stdout) console.error(stdout);
+    if (stderr) console.error(stderr);
+    process.exit(result.status ?? 1);
+  }
+
+  return result.stdout || '';
+}
+
 function assertFileDoesNotContain(relativePath, pattern, message) {
   const fullPath = path.join(repoRoot, relativePath);
   const content = fs.readFileSync(fullPath, 'utf8');
@@ -94,6 +115,124 @@ function readJson(relativePath) {
   return JSON.parse(readText(relativePath));
 }
 
+function listMarkdownFiles(relativeDir) {
+  return fs.readdirSync(path.join(repoRoot, relativeDir), { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+    .map(entry => path.join(relativeDir, entry.name));
+}
+
+function parseCliCommandNames(helpOutput) {
+  const commandNames = new Set();
+
+  for (const line of helpOutput.split('\n')) {
+    const match = /^\s{2}([a-z][a-z0-9-]*)\b/.exec(line);
+    if (!match) {
+      continue;
+    }
+
+    commandNames.add(match[1]);
+  }
+
+  return commandNames;
+}
+
+function assertDocumentedCommandsExist(relativePaths, commandNames) {
+  const commandPattern = /(?:\.\/)?event-tracking\s+([a-z][a-z0-9-]*)\b/g;
+
+  for (const relativePath of relativePaths) {
+    const content = readText(relativePath).replace(/<!--[\s\S]*?-->/g, '');
+    const commandSnippets = [
+      ...[...content.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map(match => match[1]),
+      ...[...content.matchAll(/`([^`\n]+)`/g)].map(match => match[1]).filter(snippet => snippet.includes('event-tracking')),
+    ];
+
+    for (const snippet of commandSnippets) {
+      for (const match of snippet.matchAll(commandPattern)) {
+        const commandName = match[1];
+        if (commandNames.has(commandName)) {
+          continue;
+        }
+
+        console.error(`Check failed: ${relativePath} references unknown event-tracking command "${commandName}". Keep skill/docs command examples aligned with the CLI.`);
+        process.exit(1);
+      }
+    }
+  }
+}
+
+function parseOutputContractArtifacts() {
+  const artifacts = new Set();
+  const content = readText('references/output-contract.md');
+  const tableCellPattern = /\|\s*`([^`]+)`\s*\|/g;
+
+  for (const match of content.matchAll(tableCellPattern)) {
+    artifacts.add(match[1]);
+  }
+
+  return artifacts;
+}
+
+function extractRequiredArtifacts(relativePath) {
+  const content = readText(relativePath);
+  const artifacts = new Set();
+  const artifactPattern = /`<artifact-dir>\/([^`]+)`/g;
+
+  for (const match of content.matchAll(artifactPattern)) {
+    const artifactPath = match[1].trim();
+    const topLevelName = artifactPath.split('/')[0] + (artifactPath.endsWith('/') ? '/' : '');
+    artifacts.add(topLevelName);
+  }
+
+  return artifacts;
+}
+
+function assertPhaseArtifactsAreDocumented(relativePaths) {
+  const documentedArtifacts = parseOutputContractArtifacts();
+
+  for (const relativePath of relativePaths) {
+    for (const artifactName of extractRequiredArtifacts(relativePath)) {
+      if (documentedArtifacts.has(artifactName)) {
+        continue;
+      }
+
+      console.error(`Check failed: ${relativePath} references artifact "${artifactName}" that is missing from references/output-contract.md.`);
+      process.exit(1);
+    }
+  }
+}
+
+function assertMarkdownLinksResolve(relativePaths) {
+  const markdownLinkPattern = /(?<!!)\[[^\]]+\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+
+  for (const relativePath of relativePaths) {
+    const content = readText(relativePath);
+    for (const match of content.matchAll(markdownLinkPattern)) {
+      const rawTarget = match[1];
+      if (
+        rawTarget.startsWith('http://')
+        || rawTarget.startsWith('https://')
+        || rawTarget.startsWith('mailto:')
+        || rawTarget.startsWith('#')
+      ) {
+        continue;
+      }
+
+      const targetPath = rawTarget.split('#')[0];
+      if (!targetPath) {
+        continue;
+      }
+
+      const resolvedPath = path.resolve(repoRoot, path.dirname(relativePath), decodeURIComponent(targetPath));
+      if (fs.existsSync(resolvedPath)) {
+        continue;
+      }
+
+      console.error(`Check failed: ${relativePath} has a broken Markdown link to ${rawTarget}.`);
+      process.exit(1);
+    }
+  }
+}
+
 function assertJsonField(relativePath, key, predicate, message) {
   const value = readJson(relativePath);
   if (!predicate(value[key], value)) {
@@ -107,6 +246,16 @@ const allBundles = getSkillBundles(sourceManifest);
 const phaseSkillFiles = getPhaseSkillBundles(sourceManifest).map(bundle => bundle.skillFile);
 const agentMetadataFiles = allBundles.map(bundle => bundle.metadataFile);
 const exportedBundleFiles = listExpectedExportedFiles(repoRoot, sourceManifest);
+const contractMarkdownFiles = [
+  'SKILL.md',
+  'README.md',
+  'ARCHITECTURE.md',
+  'DEVELOPING.md',
+  'CONTRIBUTING.md',
+  ...listMarkdownFiles('docs'),
+  ...listMarkdownFiles('references'),
+  ...phaseSkillFiles,
+];
 
 const tempInstallDir = fs.mkdtempSync(path.join(os.tmpdir(), 'event-tracking-skill-install-'));
 const tempSingleSkillInstallDir = fs.mkdtempSync(path.join(os.tmpdir(), 'event-tracking-skill-single-install-'));
@@ -119,6 +268,9 @@ runStep('Run doctor', 'node', ['scripts/doctor.mjs']);
 runStep('Smoke-test repo-local CLI', './event-tracking', ['--help'], {
   env: { ...process.env, EVENT_TRACKING_PUBLIC_CMD: './event-tracking' },
 });
+const cliCommandNames = parseCliCommandNames(captureStep('Capture CLI command surface', './event-tracking', ['--help'], {
+  env: { ...process.env, EVENT_TRACKING_PUBLIC_CMD: './event-tracking' },
+}));
 runStep('Export self-contained skill bundles', 'node', ['scripts/export-skills.mjs']);
 runStep('Install the default umbrella skill bundle into a temp skills directory', 'node', ['scripts/install-skills.mjs', '--skip-export', '--target-dir', tempInstallDir]);
 runStep('Install an explicit phase skill bundle into a temp skills directory', 'node', ['scripts/install-skills.mjs', '--skip-export', '--target-dir', tempSingleSkillInstallDir, '--skill', 'tracking-schema']);
@@ -149,12 +301,17 @@ if (readText('VERSION').trim() !== readJson('package.json').version) {
   console.error('Check failed: VERSION must match package.json version.');
   process.exit(1);
 }
+assertDocumentedCommandsExist(contractMarkdownFiles, cliCommandNames);
+assertPhaseArtifactsAreDocumented(phaseSkillFiles);
+assertMarkdownLinksResolve(contractMarkdownFiles);
 assertFileDoesNotContain('README.md', 'node dist/cli.js', 'Use the public wrapper or installed command name instead.');
 assertFileDoesNotContain('SKILL.md', 'node dist/cli.js', 'Use the public wrapper or installed command name instead.');
 assertFileDoesNotContain('references/output-contract.md', 'node dist/cli.js', 'Use the public wrapper or installed command name instead.');
 assertFileDoesNotContain('references/event-schema-guide.md', 'node dist/cli.js', 'Reference guides should use the public wrapper.');
 assertFileDoesNotContain('references/page-grouping-guide.md', 'node dist/cli.js', 'Reference guides should use the public wrapper.');
 assertFileDoesNotContain('references/gtm-troubleshooting.md', 'node dist/cli.js', 'Reference guides should use the public wrapper.');
+assertFileDoesNotContain('references/preview-report.md', 'https://www.jtracking.ai', 'Keep the default preview QA report template product-neutral.');
+assertFileDoesNotContain('references/preview-report.md', 'JTracking Can Continue To Provide', 'Keep the default preview QA report template product-neutral.');
 assertFileDoesNotContain('SKILL.md', 'https://www.jtracking.ai', 'Keep product marketing out of the core workflow contract.');
 assertFileDoesNotContain('SKILL.md', 'JTracking', 'Keep product marketing out of the core workflow contract.');
 assertFileDoesNotContain('SKILL.md', '## Phase Contracts', 'Keep the root skill at router scope; phase detail belongs in phase skills.');
