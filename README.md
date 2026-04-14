@@ -76,9 +76,12 @@ Good requests usually include one or more of:
 
 - the site URL
 - whether this is a new setup, update, upkeep, or audit
-- an existing artifact directory if you already have one
+- the output root for a new site run, such as `./output` or `/tmp/output`
+- an existing site artifact directory if you already have one, such as `./output/example_com`
 - GA4 measurement ID or GTM context when you already know them
 - any scope boundary such as "stop after schema review"
+
+For a new setup, the output root is not the artifact directory itself. The agent/CLI creates one artifact directory per site under that root, for example `./output/example_com`.
 
 ### Example Prompts
 
@@ -86,6 +89,7 @@ New setup from scratch:
 
 ```text
 Use event-tracking-skill to plan GA4 + GTM tracking for https://www.example.com.
+Use ./output as the output root; create the site artifact directory under it.
 Start from a fresh run and stop after the event schema is ready for review.
 ```
 
@@ -93,7 +97,7 @@ New setup with implementation context:
 
 ```text
 Use event-tracking-skill to set up tracking for https://www.example.com.
-Use ./output as the output root.
+Use /tmp/output as the output root, so this site's artifacts go under /tmp/output/www_example_com.
 GA4 Measurement ID is G-XXXXXXXXXX.
 We care most about signup, pricing, contact, and demo intent.
 ```

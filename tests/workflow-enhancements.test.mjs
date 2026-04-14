@@ -813,6 +813,80 @@ test('run-new-setup template starts scenario and shows next step guidance', t =>
   assert.equal(state.inputScope, 'initial launch');
 });
 
+test('run-new-setup treats a missing extensionless artifact path as the target directory', t => {
+  const outputRoot = makeTempDir();
+  t.after(() => fs.rmSync(outputRoot, { recursive: true, force: true }));
+
+  const artifactDir = path.join(outputRoot, 'www_jtracking_ai');
+  const result = runCli(['run-new-setup', artifactDir, '--input-scope', 'initial launch']);
+  assert.equal(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, new RegExp(`Artifact directory: ${artifactDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+
+  const state = readJson(path.join(artifactDir, 'workflow-state.json'));
+  assert.equal(state.artifactDir, artifactDir);
+  assert.equal(state.scenario, 'new_setup');
+  assert.equal(state.inputScope, 'initial launch');
+  assert.equal(fs.existsSync(path.join(outputRoot, 'workflow-state.json')), false);
+});
+
+test('run-new-setup derives the site artifact directory from a URL and output root', t => {
+  const outputRoot = makeTempDir();
+  t.after(() => fs.rmSync(outputRoot, { recursive: true, force: true }));
+
+  const artifactDir = path.join(outputRoot, 'www_jtracking_ai');
+  const result = runCli([
+    'run-new-setup',
+    'https://www.jtracking.ai',
+    '--output-root',
+    outputRoot,
+    '--input-scope',
+    'initial launch',
+  ]);
+  assert.equal(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, new RegExp(`Artifact directory: ${artifactDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(result.combinedOutput, new RegExp(`analyze https://www\\.jtracking\\.ai --output-root ${outputRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+
+  const state = readJson(path.join(artifactDir, 'workflow-state.json'));
+  assert.equal(state.artifactDir, artifactDir);
+  assert.equal(state.siteUrl, 'https://www.jtracking.ai');
+  assert.equal(state.scenario, 'new_setup');
+
+  const runContext = readJson(path.join(artifactDir, RUN_CONTEXT_FILE));
+  assert.equal(runContext.outputRoot, outputRoot);
+  assert.equal(runContext.siteUrl, 'https://www.jtracking.ai');
+  assert.equal(fs.existsSync(path.join(outputRoot, 'workflow-state.json')), false);
+});
+
+test('commands that need prompt input fail clearly in non-interactive terminals', t => {
+  const result = runCli(['analyze', 'https://example.com']);
+  assert.notEqual(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, /Cannot prompt for input in a non-interactive terminal/);
+  assert.match(result.combinedOutput, /output root directory/);
+});
+
+test('sync fails before OAuth when non-interactive target selection would be required', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const configFile = path.join(artifactDir, 'gtm-config.json');
+  writeJson(configFile, {
+    exportFormatVersion: 2,
+    containerVersion: {
+      tag: [],
+      trigger: [],
+      variable: [],
+    },
+  });
+  const scenarioResult = runCli(['start-scenario', 'new_setup', artifactDir]);
+  assert.equal(scenarioResult.status, 0, scenarioResult.combinedOutput);
+
+  const result = runCli(['sync', configFile]);
+  assert.notEqual(result.status, 0, result.combinedOutput);
+  assert.match(result.combinedOutput, /sync requires an interactive terminal/);
+  assert.match(result.combinedOutput, /--account-id, --container-id, and --workspace-id/);
+  assert.doesNotMatch(result.combinedOutput, /Authenticating with Google/);
+});
+
 test('run-health-audit template starts scenario and writes audit deliverables', t => {
   const artifactDir = makeTempDir();
   t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));

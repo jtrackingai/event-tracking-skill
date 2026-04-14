@@ -149,6 +149,15 @@ function suggestedOutputDir(url: string): string {
   }
 }
 
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function resolveOutputDir(outputDir: string): string {
   const dir = path.resolve(outputDir);
   fs.mkdirSync(dir, { recursive: true });
@@ -172,7 +181,33 @@ function rl(): readline.Interface {
   return readline.createInterface({ input: process.stdin, output: process.stdout });
 }
 
+function assertInteractivePrompt(question: string): void {
+  if (process.stdin.isTTY) return;
+
+  const promptLabel = question.replace(/\s+/g, ' ').trim();
+  throw new Error(
+    `Cannot prompt for input in a non-interactive terminal: ${promptLabel} ` +
+    'Run this command in an interactive terminal or provide the required options explicitly.',
+  );
+}
+
+function assertSyncCanRunWithoutInteractivePrompts(opts: {
+  accountId?: string;
+  containerId?: string;
+  workspaceId?: string;
+  newWorkspace?: boolean;
+}): void {
+  if (process.stdin.isTTY) return;
+  if (opts.accountId && opts.containerId && opts.workspaceId && !opts.newWorkspace) return;
+
+  throw new Error(
+    'sync requires an interactive terminal for Google OAuth/account/container/workspace selection. ' +
+    'Run sync with TTY enabled, or provide --account-id, --container-id, and --workspace-id to run non-interactively.',
+  );
+}
+
 async function prompt(question: string): Promise<string> {
+  assertInteractivePrompt(question);
   return new Promise(resolve => {
     const iface = rl();
     iface.question(question, answer => {
@@ -241,6 +276,32 @@ async function requireAnalyzeOutputDir(
     artifactDir: resolveOutputDir(artifactDir),
     outputRoot,
   };
+}
+
+function resolveNewSetupArtifactLocation(input: string, explicitOutputRoot?: string): {
+  artifactDir: string;
+  outputRoot?: string;
+  siteUrl?: string;
+} {
+  const providedRoot = explicitOutputRoot?.trim();
+
+  if (isHttpUrl(input)) {
+    if (!providedRoot) {
+      throw new Error('When run-new-setup receives a URL, provide --output-root so the artifact directory can be derived as <output-root>/<url-slug>.');
+    }
+    const outputRoot = resolveOutputRoot(providedRoot);
+    return {
+      artifactDir: path.join(outputRoot, suggestedOutputDir(input)),
+      outputRoot,
+      siteUrl: input,
+    };
+  }
+
+  if (providedRoot) {
+    throw new Error('Use --output-root only when run-new-setup receives a site URL. For an artifact directory path, omit --output-root.');
+  }
+
+  return { artifactDir: resolveArtifactDirFromInput(input) };
 }
 
 function resolveArtifactDirFromFile(file: string): string {
@@ -662,10 +723,14 @@ function suggestScenarioNextCommand(artifactDir: string, scenario: WorkflowScena
   const resolvedDir = path.resolve(artifactDir);
   const siteAnalysisFile = path.join(resolvedDir, 'site-analysis.json');
   const eventSchemaFile = path.join(resolvedDir, 'event-schema.json');
+  const workflowState = readWorkflowState(resolvedDir);
+  const runContext = readRunContext(resolvedDir);
+  const knownSiteUrl = workflowState?.siteUrl || runContext?.siteUrl || '<url>';
+  const outputRoot = runContext?.outputRoot || path.dirname(resolvedDir);
 
   if (scenario === 'new_setup') {
     if (!filePresent(resolvedDir, 'site-analysis.json')) {
-      return formatPublicCommand(['analyze', '<url>', '--output-root', path.dirname(resolvedDir)]);
+      return formatPublicCommand(['analyze', knownSiteUrl, '--output-root', outputRoot]);
     }
     if (!filePresent(resolvedDir, 'event-schema.json')) {
       return formatPublicCommand(['prepare-schema', siteAnalysisFile]);
@@ -695,7 +760,7 @@ function suggestScenarioNextCommand(artifactDir: string, scenario: WorkflowScena
 
   if (scenario === 'tracking_health_audit') {
     if (!filePresent(resolvedDir, 'site-analysis.json')) {
-      return formatPublicCommand(['analyze', '<url>', '--output-root', path.dirname(resolvedDir), '--scenario', 'tracking_health_audit']);
+      return formatPublicCommand(['analyze', knownSiteUrl, '--output-root', outputRoot, '--scenario', 'tracking_health_audit']);
     }
     if (!filePresent(resolvedDir, 'live-gtm-analysis.json')) {
       return formatPublicCommand(['analyze-live-gtm', siteAnalysisFile]);
@@ -981,6 +1046,7 @@ function refreshAndIndexWorkflowState(
     scenario: activeRunContext.scenario || 'legacy',
     subScenario: activeRunContext.subScenario || 'none',
     inputScope: activeRunContext.inputScope,
+    siteUrl: runContext?.siteUrl || update?.siteUrl,
   });
   snapshotArtifactFile({
     artifactDir,
@@ -2164,6 +2230,8 @@ program
       console.error('   Use --force-scenario only if you intentionally want to override this scenario gate.');
       process.exit(1);
     }
+
+    assertSyncCanRunWithoutInteractivePrompts(opts);
 
     console.log('\n🔐 Authenticating with Google...');
     const auth = await getAuthClient(artifactDir);
@@ -3631,14 +3699,18 @@ program
   });
 
 program
-  .command('run-new-setup <artifact-path>')
+  .command('run-new-setup <artifact-path-or-url>')
   .description('Scenario template: start New Setup run and provide guided next step based on current artifacts')
+  .option('--output-root <dir>', 'When <artifact-path> is a site URL, derive the artifact directory under this output root')
   .option('--input-scope <scope>', 'Optional free-form input scope note for this run')
-  .action((artifactPath: string, opts: { inputScope?: string }) => {
-    const artifactDir = resolveArtifactDirFromInput(artifactPath);
+  .action((artifactPath: string, opts: { outputRoot?: string; inputScope?: string }) => {
+    const location = resolveNewSetupArtifactLocation(artifactPath, opts.outputRoot);
+    const artifactDir = location.artifactDir;
     const inputScope = opts.inputScope?.trim() || undefined;
     const runContext = ensureActiveRunContext({
       artifactDir,
+      outputRoot: location.outputRoot,
+      siteUrl: location.siteUrl,
       scenario: 'new_setup',
       subScenario: 'none',
       inputScope,
@@ -3646,7 +3718,7 @@ program
     });
     const workflowState = refreshAndIndexWorkflowState(artifactDir, undefined, {
       outputRoot: runContext.outputRoot,
-      siteUrl: runContext.siteUrl,
+      siteUrl: location.siteUrl || runContext.siteUrl,
       scenario: 'new_setup',
       subScenario: 'none',
       inputScope,
