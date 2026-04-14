@@ -12,6 +12,7 @@
 - Run Playwright-driven commands outside the sandbox by default: `analyze`, `validate-schema --check-selectors`, and `preview`.
 - Run `sync` outside the sandbox as well.
 - If one of those commands was started in a sandbox and behaves oddly, rerun it outside the sandbox before debugging the site or GTM setup itself.
+- Run prompt-driven `sync` in an interactive TTY from the start. If the command cannot use a TTY, provide all target IDs explicitly with `--account-id`, `--container-id`, and `--workspace-id`; do not first run non-interactive sync and wait for a prompt failure.
 
 ## OAuth Failure
 

@@ -130,6 +130,7 @@ export interface WorkflowStateUpdate {
   scenario?: WorkflowScenario;
   subScenario?: WorkflowSubScenario;
   inputScope?: string;
+  siteUrl?: string;
   schemaReview?: Partial<SchemaReviewState>;
   verification?: Partial<VerificationState>;
   publish?: Partial<PublishState>;
@@ -253,10 +254,13 @@ export function getSchemaHash(schema: unknown): string {
 
 export function resolveArtifactDirFromInput(input: string): string {
   const resolved = path.resolve(input);
-  if (fileExists(resolved) && fs.statSync(resolved).isDirectory()) {
-    return resolved;
+  if (fileExists(resolved)) {
+    return fs.statSync(resolved).isDirectory() ? resolved : path.dirname(resolved);
   }
-  return path.dirname(resolved);
+
+  // Most scenario commands accept an artifact directory that may not exist yet.
+  // Only treat missing inputs as file paths when they look like artifact files.
+  return path.extname(path.basename(resolved)) ? path.dirname(resolved) : resolved;
 }
 
 function defaultPageGroupsReview(): PageGroupsReview {
@@ -618,7 +622,7 @@ export function buildWorkflowState(artifactDir: string, previousState?: Workflow
     scenario: previousState?.scenario || 'legacy',
     subScenario: previousState?.subScenario || 'none',
     inputScope: previousState?.inputScope,
-    siteUrl: analysis?.rootUrl,
+    siteUrl: analysis?.rootUrl || previousState?.siteUrl,
     platformType: analysis?.platform.type,
     currentCheckpoint: getCurrentCheckpoint(completed),
     completedCheckpoints: [
@@ -656,6 +660,7 @@ export function refreshWorkflowState(artifactDir: string, update?: WorkflowState
         scenario: update?.scenario || previousState.scenario,
         subScenario: update?.subScenario || previousState.subScenario,
         inputScope: typeof update?.inputScope === 'string' ? update.inputScope : previousState.inputScope,
+        siteUrl: update?.siteUrl || previousState.siteUrl,
         schemaReview: mergeSchemaReview(previousState.schemaReview, update?.schemaReview),
         verification: mergeVerification(previousState.verification, update?.verification),
         publish: mergePublish(previousState.publish, update?.publish),
@@ -670,6 +675,7 @@ export function refreshWorkflowState(artifactDir: string, update?: WorkflowState
           scenario: update.scenario || 'legacy',
           subScenario: update.subScenario || 'none',
           inputScope: update.inputScope,
+          siteUrl: update.siteUrl,
           currentCheckpoint: 'not_started',
           completedCheckpoints: [],
           nextAction: '',

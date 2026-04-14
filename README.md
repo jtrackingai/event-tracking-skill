@@ -66,6 +66,18 @@ For advanced install options and exported skill bundles:
 - [docs/README.install.md](docs/README.install.md)
 - [docs/skills.md](docs/skills.md)
 
+### ClawHub Publish
+
+If you are publishing this skill to ClawHub, publish the exported public bundle instead of the full repository:
+
+```bash
+npm run export:skills:clawhub
+```
+
+Then upload `dist/clawhub-skill-bundles/event-tracking-skill`.
+
+That public bundle keeps the agent-facing skill docs and references, but strips the bundled auto-update runtime and other maintainer-only packaging files that trigger broader security scans.
+
 ## Quick Start
 
 ### Use It As A Skill
@@ -76,9 +88,12 @@ Good requests usually include one or more of:
 
 - the site URL
 - whether this is a new setup, update, upkeep, or audit
-- an existing artifact directory if you already have one
+- the output root for a new site run, such as `./output` or `/tmp/output`
+- an existing site artifact directory if you already have one, such as `./output/example_com`
 - GA4 measurement ID or GTM context when you already know them
 - any scope boundary such as "stop after schema review"
+
+For a new setup, the output root is not the artifact directory itself. The agent/CLI creates one artifact directory per site under that root, for example `./output/example_com`.
 
 ### Example Prompts
 
@@ -86,6 +101,7 @@ New setup from scratch:
 
 ```text
 Use event-tracking-skill to plan GA4 + GTM tracking for https://www.example.com.
+Use ./output as the output root; create the site artifact directory under it.
 Start from a fresh run and stop after the event schema is ready for review.
 ```
 
@@ -93,7 +109,7 @@ New setup with implementation context:
 
 ```text
 Use event-tracking-skill to set up tracking for https://www.example.com.
-Use ./output as the output root.
+Use /tmp/output as the output root, so this site's artifacts go under /tmp/output/www_example_com.
 GA4 Measurement ID is G-XXXXXXXXXX.
 We care most about signup, pricing, contact, and demo intent.
 ```
@@ -160,9 +176,13 @@ A typical conversation flow is:
 ## Product Boundary
 
 - the workflow runs locally
+- browser-backed steps rely on Playwright Chromium; `npm install` triggers the package `postinstall` step that installs the browser binary
 - GTM sync uses Google OAuth
+- OAuth credentials are cached in the artifact directory for the current site run
 - generic sites use automated preview verification
 - Shopify uses the Shopify-specific branch and manual post-install validation
+- optional anonymous telemetry is opt-in, stores consent in local user config, and can be disabled with `DO_NOT_TRACK=1` or `EVENT_TRACKING_TELEMETRY=0`
+- installed copy bundles can self-check GitHub for updates and reinstall the same selected bundle set
 
 ## Need A More Advanced Setup?
 
