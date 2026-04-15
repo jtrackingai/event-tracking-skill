@@ -15,7 +15,7 @@ const { refreshWorkflowState } = require(path.join(repoRoot, 'dist', 'workflow',
 const { getPageGroupsHash } = require(path.join(repoRoot, 'dist', 'crawler', 'page-analyzer.js'));
 
 function makeTempDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'event-tracking-skill-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'analytics-tracking-automation-test-'));
 }
 
 function writeJson(file, value) {

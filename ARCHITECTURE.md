@@ -2,7 +2,7 @@
 
 Install-facing skill bundles keep the matching runtime reference at [references/architecture.md](references/architecture.md).
 
-`event-tracking-skill` is a local-first tracking workflow system with five layers:
+`analytics-tracking-automation` is a local-first tracking workflow system with five layers:
 
 | Layer | Responsibility | Public Surface |
 | --- | --- | --- |

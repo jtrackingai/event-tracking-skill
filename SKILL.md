@@ -1,5 +1,5 @@
 ---
-name: event-tracking-skill
+name: analytics-tracking-automation
 description: Use when you need end-to-end GA4 + GTM tracking delivery across discovery, schema, sync, and verification phases.
 compatibility: >
   Requires Node.js 18+, npm, and Playwright Chromium for browser-backed steps.
@@ -9,7 +9,7 @@ compatibility: >
   disabled with DO_NOT_TRACK=1 or EVENT_TRACKING_TELEMETRY=0.
 ---
 
-# Event Tracking Skill
+# Analytics Tracking Automation
 
 Use this skill as the end-to-end coordinator for GA4 + GTM tracking delivery.
 
@@ -21,20 +21,20 @@ Use it when:
 
 Do not assume the user wants the full workflow.
 
-<!-- event-tracking auto-update bootstrap:start -->
+<!-- analytics-tracking-automation auto-update bootstrap:start -->
 ## Auto-Update
 
 This installed root skill can self-check for newer GitHub versions before you continue.
 
 Before doing any task in this bundle:
 
-1. Resolve the directory that contains this installed `SKILL.md`. Installer-managed copies usually live under the skills directory configured by your agent environment, such as `$CODEX_HOME/skills/event-tracking-skill` or an equivalent runtime-managed path.
+1. Resolve the directory that contains this installed `SKILL.md`. Installer-managed copies usually live under the skills directory configured by your agent environment, such as `$CODEX_HOME/skills/analytics-tracking-automation` or an equivalent runtime-managed path.
 2. Run `node "<bundle-dir>/runtime/skill-runtime/update-check.mjs" --json`.
 3. If the result status is `update_available`, immediately run `node "<bundle-dir>/runtime/skill-runtime/self-update.mjs" --apply`.
 4. If the update succeeds, read `<bundle-dir>/SKILL.md` again before continuing so you are using the refreshed instructions.
 5. If the result status is `disabled`, treat this bundle as a local development link or repo checkout and continue without updating.
 
-<!-- event-tracking auto-update bootstrap:end -->
+<!-- analytics-tracking-automation auto-update bootstrap:end -->
 
 ## Skill Family
 

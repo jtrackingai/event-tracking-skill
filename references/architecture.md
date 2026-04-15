@@ -120,7 +120,7 @@ When placeholder or inherited artifacts are present, workflow-state warnings sho
 
 The skill family has:
 
-- one umbrella skill: `event-tracking-skill`
+- one umbrella skill: `analytics-tracking-automation`
 - seven phase skills: `tracking-discover`, `tracking-group`, `tracking-live-gtm`, `tracking-schema`, `tracking-sync`, `tracking-verify`, `tracking-shopify`
 
 Shopify handoff rule:

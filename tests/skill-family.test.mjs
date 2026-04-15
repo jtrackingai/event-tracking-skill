@@ -157,7 +157,7 @@ test('Shared install docs cover the default minimal install and optional phase i
 
 test('portable and ClawHub export profiles keep different packaging boundaries', () => {
   const manifest = loadSourceSkillManifest(repoRoot);
-  const rootBundle = manifest.bundles.find(bundle => bundle.name === 'event-tracking-skill');
+  const rootBundle = manifest.bundles.find(bundle => bundle.name === 'analytics-tracking-automation');
 
   assert.ok(rootBundle, 'Source manifest should include the umbrella skill bundle.');
   assert.ok(
@@ -188,7 +188,7 @@ test('portable and ClawHub export profiles keep different packaging boundaries',
     'ClawHub exports should not include runtime files.',
   );
   assert.ok(
-    clawhubFiles.some(relativePath => relativePath.startsWith('dist/clawhub-skill-bundles/event-tracking-skill/')),
+    clawhubFiles.some(relativePath => relativePath.startsWith('dist/clawhub-skill-bundles/analytics-tracking-automation/')),
     'ClawHub exports should use the dedicated publish directory.',
   );
 });

@@ -1,7 +1,7 @@
 [
   {
     "name": "new setup from fresh URL starts with discover",
-    "input": "Use event-tracking-skill to set up GA4 and GTM tracking for https://www.example.com from scratch.",
+    "input": "Use analytics-tracking-automation to set up GA4 and GTM tracking for https://www.example.com from scratch.",
     "expectedIntent": "new_setup",
     "expectedEntryCommand": "run-new-setup",
     "expectedPhase": "tracking-discover",

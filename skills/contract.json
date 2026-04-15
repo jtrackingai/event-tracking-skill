@@ -1,7 +1,7 @@
 {
-  "familyName": "event-tracking-skill",
+  "familyName": "analytics-tracking-automation",
   "sourceManifest": "skills/manifest.json",
-  "umbrellaSkill": "event-tracking-skill",
+  "umbrellaSkill": "analytics-tracking-automation",
   "entryIntents": {
     "resume_existing_run": {
       "description": "The user already has an artifact directory or one of its files and wants to continue from the current checkpoint.",

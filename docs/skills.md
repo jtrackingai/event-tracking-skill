@@ -8,7 +8,7 @@ This page is user-facing. Its job is to help you choose the right skill entry po
 
 Most users should start with the umbrella skill:
 
-- `event-tracking-skill`
+- `analytics-tracking-automation`
 
 Use it when:
 
@@ -23,7 +23,7 @@ The umbrella skill owns first-turn conversational intake for chat entry points. 
 <!-- contract-generated:user-skill-map:start -->
 | Skill | Best For | What The User Usually Says |
 | --- | --- | --- |
-| `event-tracking-skill` | end-to-end routing | "Help me set up or review tracking for this site" |
+| `analytics-tracking-automation` | end-to-end routing | "Help me set up or review tracking for this site" |
 | `tracking-discover` | site inspection and bootstrap | "Analyze this site first" |
 | `tracking-group` | page-group review | "Group these pages by business meaning" |
 | `tracking-live-gtm` | live GTM baseline review | "Show me what is already live in GTM" |
@@ -35,13 +35,13 @@ The umbrella skill owns first-turn conversational intake for chat entry points. 
 
 ## Recommended Default
 
-- If the request is broad or ambiguous, use `event-tracking-skill`.
+- If the request is broad or ambiguous, use `analytics-tracking-automation`.
 - If the user already has a specific artifact such as `site-analysis.json` or `event-schema.json`, move directly to the matching phase skill.
 - If the platform is Shopify, keep discovery and grouping shared, then switch to `tracking-shopify` for the Shopify-specific branch.
 
 ## Quick Routing Guide
 
-### `event-tracking-skill`
+### `analytics-tracking-automation`
 
 Use this when you want the agent to figure out the right starting point and keep the conversation moving.
 

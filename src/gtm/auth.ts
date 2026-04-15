@@ -16,7 +16,7 @@ const LEGACY_CREDENTIALS_FILES = [
 ];
 const OAUTH_CLIENT_ID_ENV = 'GOOGLE_OAUTH_CLIENT_ID';
 const OAUTH_CLIENT_SECRET_ENV = 'GOOGLE_OAUTH_CLIENT_SECRET';
-const EMBEDDED_OAUTH_KEY_SEED = 'event-tracking-skill::embedded-google-oauth::v1';
+const EMBEDDED_OAUTH_KEY_SEED = 'analytics-tracking-automation::embedded-google-oauth::v1';
 const EMBEDDED_CLIENT_ID = {
   iv: '4s+RgoYk7o+BncoX',
   data: 'i2meCXHJekMYwpY73pgBXbf6tLCd4GYul8FAEmVkI8q2R/oT2tWSOvyfO0TvqJR1c01MnGXRzR9W7MqhornnmhqLmDYOXxk2',

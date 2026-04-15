@@ -383,16 +383,14 @@ test('closeout shape fixtures stay aligned with the skill contract', () => {
     assert.deepEqual(phase.closeoutShape, fixture.expectedShape, `${fixture.phase} closeout shape should match fixture.`);
 
     if (fixture.phase === 'tracking-schema') {
-      assert.match(docsSkillMap, /Event Table/i);
-      assert.match(docsSkillMap, /Common Properties/i);
-      assert.match(docsSkillMap, /Event-specific Properties/i);
+      assert.match(docsSkillMap, /event-plan review/i);
+      assert.match(docsSkillMap, /one bounded part of the workflow/i);
     }
 
     if (fixture.phase === 'tracking-verify') {
-      assert.match(docsSkillMap, /verdict/i);
-      assert.match(docsSkillMap, /blockers/i);
-      assert.match(docsSkillMap, /unexpected events/i);
-      assert.match(docsSkillMap, /next action/i);
+      assert.match(docsSkillMap, /preview QA/i);
+      assert.match(docsSkillMap, /publish readiness/i);
+      assert.match(docsSkillMap, /answer-first summaries/i);
     }
   }
 });
