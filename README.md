@@ -76,7 +76,7 @@ npm run export:skills:clawhub
 
 Then upload `dist/clawhub-skill-bundles/analytics-tracking-automation`.
 
-That public bundle keeps the agent-facing skill docs and references, but strips the bundled auto-update runtime and other maintainer-only packaging files that trigger broader security scans.
+That public bundle is an installable slim runtime bundle. It keeps the agent-facing skill docs, references, compiled CLI runtime, and bundle-local bootstrap entrypoint, but strips the GitHub auto-update runtime and the full maintainer repository surface that tends to trigger broader security scans.
 
 ## Quick Start
 
