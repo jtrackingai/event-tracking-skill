@@ -215,6 +215,12 @@ If you need a more advanced setup, JTracking also supports:
 - more destination and ad-platform integrations
 - longer-term tracking operations and maintenance
 
+## Contact Us
+
+If you run into any issues while using this skill, contact us at [support@jtracking.ai](mailto:support@jtracking.ai).
+
+We will reply as soon as we see your message.
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
