@@ -191,8 +191,47 @@ const PREVIEW_INJECTION_SCRIPT_TIMEOUT_MS = 8000;
 const PREVIEW_INJECTION_READY_TIMEOUT_MS = 8000;
 const PREVIEW_INJECTION_SETTLE_MS = 1000;
 const PREVIEW_INJECTION_MAX_ATTEMPTS = 2;
-const PREVIEW_CLICK_WAIT_MS = 1800;
-const PREVIEW_CLICK_RETRY_WAIT_MS = 2500;
+const PREVIEW_CLICK_WAIT_MS = 6000;
+const PREVIEW_CLICK_RETRY_WAIT_MS = 7000;
+const PREVIEW_SUBMIT_WAIT_MS = 6000;
+const PREVIEW_CUSTOM_CLICK_WAIT_MS = 6000;
+
+function splitSelectorList(selector: string): string[] {
+  return selector.split(',').map(part => part.trim()).filter(Boolean);
+}
+
+function parseContainsSelector(selector: string): { cssSelector: string; textMatches: string[] } {
+  const textMatches = Array.from(selector.matchAll(/:contains\((["'])(.*?)\1\)/g))
+    .map(match => match[2]?.trim())
+    .filter((value): value is string => !!value);
+  const cssSelector = selector.replace(/:contains\((["'])(.*?)\1\)/g, '').trim() || '*';
+  return { cssSelector, textMatches };
+}
+
+function buildPreviewClickTargets(selector: string): Array<{ cssSelector: string; textMatches: string[] }> {
+  return splitSelectorList(selector).map(parseContainsSelector);
+}
+
+function selectorLooksLikeForm(selector: string): boolean {
+  return splitSelectorList(selector)
+    .map(parseContainsSelector)
+    .map(item => item.cssSelector.trim())
+    .filter(Boolean)
+    .every(item => /^form(?=[.#:\[\s]|$)/i.test(item));
+}
+
+async function enablePreviewSubmitGuard(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as any).__jtrackingPreviewMode = true;
+    if (!(window as any).__jtrackingPreviewSubmitGuardInstalled) {
+      document.addEventListener('submit', (evt) => {
+        if (!(window as any).__jtrackingPreviewMode) return;
+        evt.preventDefault();
+      }, true);
+      (window as any).__jtrackingPreviewSubmitGuardInstalled = true;
+    }
+  }).catch(() => {});
+}
 
 async function navigateForPreviewPreflight(page: Page, url: string): Promise<void> {
   try {
@@ -246,6 +285,11 @@ export const __testOnly = {
   navigateForPreviewPage,
   mapPreviewPageUrl,
   clickVisibleMatchAt,
+  buildPreviewClickTargets,
+  selectorLooksLikeForm,
+  waitForHitCount,
+  eventAppliesToPage,
+  normalizeComparableUrl,
 };
 
 function getManagedPreviewEvents(schema: EventSchema): GA4Event[] {
@@ -353,7 +397,7 @@ function eventAppliesToPage(event: GA4Event, pageUrl: string, rootUrl: string): 
     }
   }
 
-  return pageUrl === rootUrl;
+  return normalizeComparableUrl(pageUrl) === normalizeComparableUrl(rootUrl);
 }
 
 function normalizeComparableUrl(url: string): string {
@@ -422,11 +466,11 @@ async function attemptFormSubmit(page: Page, selector: string): Promise<boolean>
       await candidate.scrollIntoViewIfNeeded().catch(() => {});
       await candidate.evaluate((form: Element) => {
         const target = form as HTMLFormElement;
-        if (typeof target.requestSubmit === 'function') {
-          target.requestSubmit();
-          return;
-        }
-        target.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        target.dispatchEvent(new SubmitEvent('submit', {
+          bubbles: true,
+          cancelable: true,
+          submitter: null,
+        }));
       });
       return true;
     } catch {
@@ -510,6 +554,7 @@ async function injectPreviewContainer(page: Page, gtmScriptUrl: string | null, g
     }, gtmPublicId, { timeout: PREVIEW_INJECTION_READY_TIMEOUT_MS }).then(() => true).catch(() => false);
 
     if (gtmReady) {
+      await enablePreviewSubmitGuard(page);
       await page.waitForTimeout(PREVIEW_INJECTION_SETTLE_MS).catch(() => {});
       await page.waitForLoadState('networkidle', { timeout: 1500 }).catch(() => {});
       return true;
@@ -537,12 +582,16 @@ async function restoreOriginalPage(
 ): Promise<boolean> {
   if (page.isClosed()) return false;
 
-  await navigateForPreviewPage(page, originalPageUrl, {
-    phaseLabel: 'Preview restore',
-    primaryTimeoutMs: PREVIEW_RESTORE_TIMEOUT_MS,
-    fallbackTimeoutMs: PREVIEW_RESTORE_FALLBACK_TIMEOUT_MS,
-    settleMs: PREVIEW_RESTORE_SETTLE_MS,
-  });
+  try {
+    await navigateForPreviewPage(page, originalPageUrl, {
+      phaseLabel: 'Preview restore',
+      primaryTimeoutMs: PREVIEW_RESTORE_TIMEOUT_MS,
+      fallbackTimeoutMs: PREVIEW_RESTORE_FALLBACK_TIMEOUT_MS,
+      settleMs: PREVIEW_RESTORE_SETTLE_MS,
+    });
+  } catch {
+    return false;
+  }
 
   if (gtmScriptUrl) {
     return injectPreviewContainer(page, gtmScriptUrl, gtmPublicId);
@@ -552,14 +601,88 @@ async function restoreOriginalPage(
   return true;
 }
 
-async function clickVisibleMatchAt(page: Page, selector: string, candidateIndex: number): Promise<boolean> {
+async function clickVisibleMatchAt(
+  page: Page,
+  selector: string,
+  candidateIndex: number,
+  textMatches: string[] = [],
+): Promise<boolean> {
   const locator = page.locator(selector);
   const count = await locator.count().catch(() => 0);
-  if (candidateIndex < 0 || candidateIndex >= Math.min(count, 8)) return false;
+  if (count <= 0) return false;
 
-  const candidate = locator.nth(candidateIndex);
+  const candidateIndexes: number[] = [];
+  for (let i = 0; i < Math.min(count, 8); i++) {
+    const candidate = locator.nth(i);
+    const matchesText = textMatches.length === 0 || await candidate.evaluate((el, expectedTexts: string[]) => {
+      const text = (el.textContent || '').trim();
+      return expectedTexts.some(expected => text.includes(expected));
+    }, textMatches).catch(() => false);
+    if (matchesText) candidateIndexes.push(i);
+  }
+
+  if (candidateIndex < 0 || candidateIndex >= candidateIndexes.length) return false;
+  const candidate = locator.nth(candidateIndexes[candidateIndex]);
   const isVisible = await candidate.isVisible({ timeout: 2000 }).catch(() => false);
   if (isVisible) {
+    const clickedViaPreviewSafeLink = await candidate.evaluate((el) => {
+      const linkTarget = el.closest('a[href], area[href]') as HTMLElement | null;
+      if (!linkTarget) return false;
+
+      const href = linkTarget.getAttribute('href') || '';
+      const rawTarget = (linkTarget.getAttribute('target') || '').trim().toLowerCase();
+      const opensNewWindow = rawTarget === '_blank';
+      let shouldKeepNavigation = false;
+
+      try {
+        const resolvedUrl = new URL((linkTarget as HTMLAnchorElement).href, window.location.href);
+        const sameOrigin = resolvedUrl.origin === window.location.origin;
+        const httpProtocol = resolvedUrl.protocol === 'http:' || resolvedUrl.protocol === 'https:';
+        shouldKeepNavigation = sameOrigin && httpProtocol && !opensNewWindow;
+      } catch {
+        shouldKeepNavigation = href.startsWith('/') && !opensNewWindow;
+      }
+
+      // Let same-origin same-tab links navigate normally. Many SPA sites only
+      // complete tracking after router/history updates, so preventing default
+      // here can create preview false negatives.
+      if (shouldKeepNavigation) {
+        return false;
+      }
+
+      const rect = linkTarget.getBoundingClientRect();
+      const style = window.getComputedStyle(linkTarget);
+      if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') {
+        return false;
+      }
+
+      const preventOnce = (evt: Event) => {
+        const eventTarget = evt.target instanceof Element ? evt.target : null;
+        if (eventTarget?.closest('a[href], area[href]') === linkTarget) {
+          evt.preventDefault();
+          linkTarget.removeEventListener('click', preventOnce, true);
+        }
+      };
+
+      linkTarget.addEventListener('click', preventOnce, true);
+      linkTarget.scrollIntoView({ block: 'center', inline: 'center' });
+      (linkTarget as HTMLElement).focus?.();
+
+      for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
+        linkTarget.dispatchEvent(new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+        }));
+      }
+      return true;
+    }).catch(() => false);
+
+    if (clickedViaPreviewSafeLink) {
+      return true;
+    }
+
     try {
       await candidate.scrollIntoViewIfNeeded().catch(() => {});
       await candidate.click({ timeout: 2000, force: false, noWaitAfter: true });
@@ -618,7 +741,7 @@ async function clickVisibleMatchAt(page: Page, selector: string, candidateIndex:
 
 async function clickVisibleMatchesUntilEvent(
   page: Page,
-  selector: string,
+  targets: Array<{ cssSelector: string; textMatches: string[] }>,
   args: {
     beforeHits: number;
     getHitCount: () => number;
@@ -626,24 +749,39 @@ async function clickVisibleMatchesUntilEvent(
     eventName: string;
   },
 ): Promise<{ clicked: boolean; afterHits: number }> {
-  const locator = page.locator(selector);
-  const count = await locator.count().catch(() => 0);
-  const maxAttempts = Math.min(count, 8);
   let clicked = false;
   let afterHits = args.beforeHits;
+  let attemptedCandidates = 0;
 
-  for (let i = 0; i < maxAttempts; i++) {
-    const attemptClicked = await clickVisibleMatchAt(page, selector, i);
-    if (!attemptClicked) continue;
+  for (const target of targets) {
+    const locator = page.locator(target.cssSelector);
+    const count = await locator.count().catch(() => 0);
+    const matchingCount = target.textMatches.length === 0
+      ? Math.min(count, 8)
+      : await locator.evaluateAll((elements, expectedTexts: string[]) => {
+        const visibleMatches = elements.filter((el) => {
+          const text = (el.textContent || '').trim();
+          return expectedTexts.some(expected => text.includes(expected));
+        });
+        return Math.min(visibleMatches.length, 8);
+      }, target.textMatches).catch(() => 0);
+    const maxAttempts = Math.min(matchingCount, 8);
 
-    clicked = true;
-    afterHits = await waitForHitCount(args.getHitCount, args.beforeHits, args.waitMs);
-    if (afterHits > args.beforeHits) {
-      return { clicked, afterHits };
-    }
+    for (let i = 0; i < maxAttempts; i++) {
+      const attemptClicked = await clickVisibleMatchAt(page, target.cssSelector, i, target.textMatches);
+      if (!attemptClicked) continue;
 
-    if (maxAttempts > 1 && i < maxAttempts - 1) {
-      console.log(`      schema retry: ${args.eventName} (candidate ${i + 2}/${maxAttempts})`);
+      clicked = true;
+      attemptedCandidates += 1;
+      afterHits = await waitForHitCount(args.getHitCount, args.beforeHits, args.waitMs);
+      if (afterHits > args.beforeHits) {
+        return { clicked, afterHits };
+      }
+
+      const remainingCandidates = maxAttempts - (i + 1);
+      if (remainingCandidates > 0) {
+        console.log(`      schema retry: ${args.eventName} (candidate ${attemptedCandidates + 1}/${attemptedCandidates + remainingCandidates})`);
+      }
     }
   }
 
@@ -863,6 +1001,7 @@ async function runBrowserVerification(args: BrowserVerificationArgs): Promise<Pr
           console.log(`    [GTM injected]`);
         } else {
           await page.waitForLoadState('networkidle', { timeout: 1500 }).catch(() => {});
+          await enablePreviewSubmitGuard(page);
         }
         if (page.isClosed()) continue;
 
@@ -922,7 +1061,8 @@ async function runBrowserVerification(args: BrowserVerificationArgs): Promise<Pr
               const restored = await restoreOriginalPage(page, originalPageUrl, gtmScriptUrl, gtmPublicId);
               shouldRestoreBeforeNextEvent = false;
               if (!restored || page.isClosed()) {
-                throw new Error(`Failed to restore ${pageAnalysis.url} before previewing ${event.eventName}.`);
+                console.warn(`      schema skip: ${event.eventName} (restore failed for ${pageAnalysis.url})`);
+                break;
               }
             }
 
@@ -940,8 +1080,55 @@ async function runBrowserVerification(args: BrowserVerificationArgs): Promise<Pr
               );
               interactionPerformed = true;
             } else if (event.triggerType === 'custom') {
-              afterHits = await attemptCustomEventDetection(page, event, siteAnalysis.rootUrl, allFiredEvents, 800);
-              interactionPerformed = true;
+              if (event.elementSelector) {
+                if (selectorLooksLikeForm(event.elementSelector)) {
+                  const cleanSelector = event.elementSelector.replace(/:contains\([^)]*\)/g, '').trim();
+                  const filledInputs = await fillNearbyInputsForSelector(page, cleanSelector);
+                  if (filledInputs > 0) {
+                    interactionPrepared = true;
+                    console.log(`      schema prepare: ${event.eventName} (filled ${filledInputs} input${filledInputs > 1 ? 's' : ''})`);
+                  }
+                  const submitted = await attemptFormSubmit(page, cleanSelector);
+                  if (!submitted) {
+                    interactionOutcomes.set(eventId, {
+                      attempted: true,
+                      clicked: false,
+                      prepared: interactionPrepared,
+                    });
+                    console.log(`      schema skip: ${event.eventName}`);
+                    continue;
+                  }
+                  interactionPerformed = true;
+                  afterHits = await waitForHitCount(
+                    () => getMatchingFiredEvents(event, siteAnalysis.rootUrl, allFiredEvents).length,
+                    beforeHits,
+                    PREVIEW_SUBMIT_WAIT_MS,
+                  );
+                } else {
+                  const clickTargets = buildPreviewClickTargets(event.elementSelector);
+                  const customClickResult = await clickVisibleMatchesUntilEvent(page, clickTargets, {
+                    beforeHits,
+                    getHitCount: () => getMatchingFiredEvents(event, siteAnalysis.rootUrl, allFiredEvents).length,
+                    waitMs: PREVIEW_CUSTOM_CLICK_WAIT_MS,
+                    eventName: event.eventName,
+                  });
+                  afterHits = customClickResult.afterHits;
+                  interactionPerformed = customClickResult.clicked;
+                  interactionClicked = customClickResult.clicked;
+                  if (!customClickResult.clicked) {
+                    interactionOutcomes.set(eventId, {
+                      attempted: true,
+                      clicked: false,
+                      prepared: false,
+                    });
+                    console.log(`      schema skip: ${event.eventName}`);
+                    continue;
+                  }
+                }
+              } else {
+                afterHits = await attemptCustomEventDetection(page, event, siteAnalysis.rootUrl, allFiredEvents, 800);
+                interactionPerformed = true;
+              }
             } else if (event.triggerType === 'form_submit' && event.elementSelector) {
               const cleanSelector = event.elementSelector.replace(/:contains\([^)]*\)/g, '').trim();
               const filledInputs = await fillNearbyInputsForSelector(page, cleanSelector);
@@ -963,11 +1150,11 @@ async function runBrowserVerification(args: BrowserVerificationArgs): Promise<Pr
               afterHits = await waitForHitCount(
                 () => getMatchingFiredEvents(event, siteAnalysis.rootUrl, allFiredEvents).length,
                 beforeHits,
-                1500,
+                PREVIEW_SUBMIT_WAIT_MS,
               );
             } else if (event.triggerType === 'click' && event.elementSelector) {
-              const cleanSelector = event.elementSelector.replace(/:contains\([^)]*\)/g, '').trim();
-              let { clicked, afterHits: clickHits } = await clickVisibleMatchesUntilEvent(page, cleanSelector, {
+              const clickTargets = buildPreviewClickTargets(event.elementSelector);
+              let { clicked, afterHits: clickHits } = await clickVisibleMatchesUntilEvent(page, clickTargets, {
                 beforeHits,
                 getHitCount: () => getMatchingFiredEvents(event, siteAnalysis.rootUrl, allFiredEvents).length,
                 waitMs: PREVIEW_CLICK_WAIT_MS,
@@ -980,11 +1167,12 @@ async function runBrowserVerification(args: BrowserVerificationArgs): Promise<Pr
               }
 
               if (afterHits <= beforeHits) {
-                const filledInputs = await fillNearbyInputsForSelector(page, cleanSelector);
+                const fallbackSelector = clickTargets[0]?.cssSelector || event.elementSelector.replace(/:contains\([^)]*\)/g, '').trim();
+                const filledInputs = await fillNearbyInputsForSelector(page, fallbackSelector);
                 if (filledInputs > 0) {
                   interactionPrepared = true;
                   console.log(`      schema prepare: ${event.eventName} (filled ${filledInputs} input${filledInputs > 1 ? 's' : ''})`);
-                  const retryResult = await clickVisibleMatchesUntilEvent(page, cleanSelector, {
+                  const retryResult = await clickVisibleMatchesUntilEvent(page, clickTargets, {
                     beforeHits,
                     getHitCount: () => getMatchingFiredEvents(event, siteAnalysis.rootUrl, allFiredEvents).length,
                     waitMs: PREVIEW_CLICK_RETRY_WAIT_MS,

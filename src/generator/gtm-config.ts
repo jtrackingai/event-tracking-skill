@@ -17,6 +17,7 @@ export interface GTMTrigger {
   triggerId: string;
   name: string;
   type: string;
+  eventName?: GTMParameter;
   customEventFilter?: GTMCondition[];
   filter?: GTMCondition[];
   parameter?: GTMParameter[];
@@ -28,7 +29,7 @@ export interface GTMTag {
   containerId: string;
   tagId: string;
   name: string;
-  type: string; // 'gaawe' = GA4 Event, 'gaawc' = GA4 Config
+  type: string; // 'gaawe' = GA4 Event, 'gaawc' = GA4 Config, 'html' = Custom HTML
   parameter?: GTMParameter[];
   firingTriggerId?: string[];
   blockingTriggerId?: string[];
@@ -143,38 +144,152 @@ function makeUrlFilterConditions(
   }];
 }
 
+function splitSelectorList(selector: string): string[] {
+  return selector.split(',').map(part => part.trim()).filter(Boolean);
+}
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeSelectorTextToRegex(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return escapeRegexLiteral(trimmed).replace(/\s+/g, '\\s+');
+}
+
+function escapeJsStringLiteral(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n');
+}
+
+function extractContainsText(selectorPart: string): { selector: string; textMatches: string[] } {
+  const textMatches = Array.from(selectorPart.matchAll(/:contains\((["'])(.*?)\1\)/g))
+    .map(match => match[2]?.trim())
+    .filter((value): value is string => !!value);
+  const selector = selectorPart.replace(/:contains\((["'])(.*?)\1\)/g, '').trim();
+  return { selector, textMatches };
+}
+
+type CustomListenerMode = 'click' | 'submit';
+
+function isFormSelector(selector: string): boolean {
+  return /^form(?=[.#:\[\s]|$)/i.test(selector.trim());
+}
+
+function inferCustomListenerMode(event: GA4Event): CustomListenerMode {
+  const selectors = splitSelectorList(event.elementSelector || '')
+    .map(extractContainsText)
+    .map(part => part.selector.trim())
+    .filter(Boolean);
+
+  if (selectors.length > 0 && selectors.every(isFormSelector)) {
+    return 'submit';
+  }
+
+  return 'click';
+}
+
+function buildCustomListenerHtml(event: GA4Event): string {
+  const parsedParts = splitSelectorList(event.elementSelector || '').map(extractContainsText);
+  const selectors = parsedParts
+    .map(part => ({ selector: part.selector.trim() }))
+    .filter(part => part.selector);
+  const listenerMode = inferCustomListenerMode(event);
+  const pageUrlPattern = event.pageUrlPattern ? new RegExp(event.pageUrlPattern).source : '';
+
+  const selectorConfig = selectors.map(part => ({
+    selector: part.selector,
+  }));
+
+  return [
+    '<script>',
+    '(function(){',
+    `  var eventName = "${escapeJsStringLiteral(event.eventName)}";`,
+    `  var listenerMode = "${listenerMode}";`,
+    `  var pagePattern = ${pageUrlPattern ? `new RegExp("${escapeJsStringLiteral(pageUrlPattern)}")` : 'null'};`,
+    `  var selectors = ${JSON.stringify(selectorConfig)};`,
+    '  if (window.__jtrackingCustomListeners && window.__jtrackingCustomListeners[eventName]) return;',
+    '  window.__jtrackingCustomListeners = window.__jtrackingCustomListeners || {};',
+    '  window.__jtrackingCustomListeners[eventName] = true;',
+    '  document.addEventListener(listenerMode, function(evt) {',
+    '    try {',
+    '      if (pagePattern && !pagePattern.test(window.location.href)) return;',
+    '      var target = evt.target instanceof Element ? evt.target : null;',
+    '      if (!target) return;',
+    '      for (var i = 0; i < selectors.length; i++) {',
+    '        var item = selectors[i];',
+    '        var matched = target.closest(item.selector);',
+    '        if (!matched) continue;',
+    '        var text = (matched.textContent || "").trim();',
+    '        if (listenerMode === "submit" && window.__jtrackingPreviewMode) {',
+    '          evt.preventDefault();',
+    '        }',
+    '        window.dataLayer = window.dataLayer || [];',
+    '        if (listenerMode === "submit") {',
+    '          var action = "";',
+    '          if (matched instanceof HTMLFormElement) {',
+    '            action = matched.action || matched.getAttribute("action") || window.location.href;',
+    '          }',
+    '          var formClassName = typeof matched.className === "string" ? matched.className : "";',
+    '          window.dataLayer.push({',
+    '            event: eventName,',
+    '            form_text: text,',
+    '            form_url: action,',
+    '            form_classes: formClassName',
+    '          });',
+    '        } else {',
+    '          var href = "";',
+    '          if (matched instanceof HTMLAnchorElement || matched instanceof HTMLAreaElement) {',
+    '            href = matched.href || matched.getAttribute("href") || "";',
+    '          } else if (matched instanceof Element) {',
+    '            var hrefNode = matched.closest("a[href], area[href]");',
+    '            href = hrefNode ? (hrefNode.href || hrefNode.getAttribute("href") || "") : "";',
+    '          }',
+    '          var className = typeof matched.className === "string" ? matched.className : "";',
+    '          window.dataLayer.push({',
+    '            event: eventName,',
+    '            link_text: text,',
+    '            link_url: href,',
+    '            link_classes: className',
+    '          });',
+    '        }',
+    '        return;',
+    '      }',
+    '    } catch (_err) {}',
+  '  }, true);',
+    '})();',
+    '</script>',
+  ].join('\n');
+}
+
+function shouldMatchDescendants(selectorPart: string): boolean {
+  return !!selectorPart.trim();
+}
+
 function makeClickTrigger(event: GA4Event, accountId: string, containerId: string): GTMTrigger {
   const triggerId = nextId();
   const filter: GTMCondition[] = [];
 
-  // Use 'linkClick' (Just Links) for <a> elements, 'click' (All Elements) for buttons/others
-  const isLinkSelector = event.elementSelector?.trimStart().toLowerCase().startsWith('a');
-  const triggerType = isLinkSelector ? 'linkClick' : 'click';
-
   if (event.elementSelector) {
-    // Strip jQuery :contains() pseudo-selector — not supported by GTM native CSS matching
-    const cleanSelector = event.elementSelector.replace(/:contains\([^)]*\)/g, '').trim();
+    // GTM cannot evaluate jQuery :contains() selectors directly.
+    // Convert them into a descendant-safe CSS selector only.
+    // We intentionally do not add Click Text conditions here because
+    // localized pages can render different CTA copy while preserving
+    // the same structural selector.
+    const parsedParts = splitSelectorList(event.elementSelector).map(extractContainsText);
+    const selectorParts = parsedParts
+      .map(part => part.selector)
+      .filter(Boolean);
+    const uniqueParts = [...new Set(selectorParts)];
+    const finalSelector = uniqueParts.map(selectorPart => {
+      if (!shouldMatchDescendants(selectorPart)) return selectorPart;
+      return `:is(${selectorPart}, ${selectorPart} *)`;
+    }).join(', ');
 
-    if (isLinkSelector) {
-      // <a> elements: GTM linkClick bubbles up to the <a>, cssSelector works fine
-      filter.push({
-        type: 'cssSelector',
-        parameter: [
-          { type: 'template', key: 'arg0', value: '{{Click Element}}' },
-          { type: 'template', key: 'arg1', value: cleanSelector },
-        ],
-      });
-    } else {
-      // Button / other elements: GTM evaluates the click trigger against event.target,
-      // which is often a nested <span>/<img> inside the button rather than the button itself.
-      // Wrap button selectors in :is(button, button *) so both the button and its descendants match.
-      // Keep non-button selectors exact to avoid widening the trigger unexpectedly.
-      const selectorParts = cleanSelector.split(',').map(s => s.trim()).filter(Boolean);
-      const uniqueParts = [...new Set(selectorParts)];
-      const finalSelector = uniqueParts.map(selectorPart => {
-        if (!selectorPart.includes('button')) return selectorPart;
-        return `:is(${selectorPart}, ${selectorPart} *)`;
-      }).join(', ');
+    if (finalSelector) {
       filter.push({
         type: 'cssSelector',
         parameter: [
@@ -195,7 +310,10 @@ function makeClickTrigger(event: GA4Event, accountId: string, containerId: strin
     containerId,
     triggerId,
     name: toManagedName(`Trigger - ${event.eventName} - click`),
-    type: triggerType,
+    // Use All Elements click triggers consistently. Just Links misses
+    // some real-world anchor interactions such as file downloads and
+    // cross-page navigations that still need reliable click tracking.
+    type: 'click',
     filter: filter.length > 0 ? filter : undefined,
     parameter: [
       { type: 'boolean', key: 'waitForTags', value: 'true' },
@@ -300,6 +418,39 @@ function buildEventParameters(event: GA4Event, variableNameMap: Map<string, stri
   ];
 }
 
+function rewriteCustomListenerEventParameters(event: GA4Event): GA4Event {
+  if (event.triggerType !== 'custom' || !event.elementSelector) {
+    return event;
+  }
+
+  const listenerMode = inferCustomListenerMode(event);
+
+  return {
+    ...event,
+    parameters: event.parameters.map(param => {
+      if (listenerMode === 'submit' && param.value === '{{Form Text}}') {
+        return { ...param, value: '{{form_text}}' };
+      }
+      if (listenerMode === 'submit' && param.value === '{{Form URL}}') {
+        return { ...param, value: '{{form_url}}' };
+      }
+      if (listenerMode === 'submit' && param.value === '{{Form Classes}}') {
+        return { ...param, value: '{{form_classes}}' };
+      }
+      if (listenerMode === 'click' && param.value === '{{Click Text}}') {
+        return { ...param, value: '{{link_text}}' };
+      }
+      if (listenerMode === 'click' && param.value === '{{Click URL}}') {
+        return { ...param, value: '{{link_url}}' };
+      }
+      if (listenerMode === 'click' && param.value === '{{Click Classes}}') {
+        return { ...param, value: '{{link_classes}}' };
+      }
+      return param;
+    }),
+  };
+}
+
 function makeGA4EventTag(
   event: GA4Event,
   triggerId: string,
@@ -341,6 +492,27 @@ function makeGA4ConfigTag(
       // When a distinct Google tag ID is supplied, we apply it here as the configuration tag target.
       { type: 'template', key: 'measurementId', value: configTagTargetId },
       { type: 'boolean', key: 'sendPageView', value: 'true' },
+    ],
+    firingTriggerId: [pageViewTriggerId],
+    tagFiringOption: 'oncePerEvent',
+  };
+}
+
+function makeCustomHtmlTag(
+  event: GA4Event,
+  pageViewTriggerId: string,
+  accountId: string,
+  containerId: string,
+): GTMTag {
+  return {
+    accountId,
+    containerId,
+    tagId: nextId(),
+    name: toManagedName(`Listener - ${event.eventName}`),
+    type: 'html',
+    parameter: [
+      { type: 'template', key: 'html', value: buildCustomListenerHtml(event) },
+      { type: 'boolean', key: 'supportDocumentWrite', value: 'false' },
     ],
     firingTriggerId: [pageViewTriggerId],
     tagFiringOption: 'oncePerEvent',
@@ -459,6 +631,26 @@ function resolveVariables(
   return { variables, requiredBuiltIns: Array.from(requiredBuiltIns), variableNameMap };
 }
 
+function inferTriggerBuiltIns(events: GA4Event[]): string[] {
+  const required = new Set<string>();
+
+  for (const event of events) {
+    if (event.pageUrlPattern) {
+      required.add('PAGE_URL');
+    }
+
+    if (event.triggerType === 'click') {
+      required.add('CLICK_ELEMENT');
+    }
+
+    if (event.triggerType === 'form_submit') {
+      required.add('FORM_ELEMENT');
+    }
+  }
+
+  return Array.from(required);
+}
+
 export function generateGTMConfig(
   schema: EventSchema,
   tracking: GTMTrackingIds | string,
@@ -472,13 +664,15 @@ export function generateGTMConfig(
   const { measurementId, googleTagId } = trackingIds;
   const configTagTargetId = googleTagId || measurementId;
   const managedEvents = schema.events.filter(event => !isRedundantAutoEvent(event));
+  const normalizedEvents = managedEvents.map(rewriteCustomListenerEventParameters);
   const skippedAutoEvents = schema.events
     .filter(isRedundantAutoEvent)
     .map(event => event.eventName);
 
   // Dynamically resolve variables from event parameter references
-  const varRefs = extractVariableReferences(managedEvents);
+  const varRefs = extractVariableReferences(normalizedEvents);
   const { variables, requiredBuiltIns, variableNameMap } = resolveVariables(varRefs, accountId, containerId);
+  const triggerBuiltIns = inferTriggerBuiltIns(normalizedEvents);
   const triggers: GTMTrigger[] = [];
   const tags: GTMTag[] = [];
 
@@ -500,7 +694,7 @@ export function generateGTMConfig(
   let scrollTriggerCreated = false;
   let scrollTriggerId = '';
 
-  for (const event of managedEvents) {
+  for (const event of normalizedEvents) {
     let trigger: GTMTrigger;
 
     switch (event.triggerType) {
@@ -564,6 +758,7 @@ export function generateGTMConfig(
           triggerId: nextId(),
           name: toManagedName(`Trigger - ${event.eventName}`),
           type: 'customEvent',
+          eventName: { type: 'template', key: 'eventName', value: event.eventName },
           customEventFilter: [
             {
               type: 'equals',
@@ -575,6 +770,9 @@ export function generateGTMConfig(
           ],
         };
         triggers.push(customTrigger);
+        if (event.elementSelector) {
+          tags.push(makeCustomHtmlTag(event, allPagesTrigger.triggerId, accountId, containerId));
+        }
         tags.push(makeGA4EventTag(event, customTrigger.triggerId, measurementId, variableNameMap, accountId, containerId));
       }
     }
@@ -599,7 +797,7 @@ export function generateGTMConfig(
       syncMode: googleTagId ? 'google_tag_for_config_tag' : 'measurement_id_only',
       notes: metadataNotes.length > 0 ? metadataNotes : undefined,
     },
-    requiredBuiltInVariables: requiredBuiltIns,
+    requiredBuiltInVariables: [...new Set([...requiredBuiltIns, ...triggerBuiltIns])],
     containerVersion: {
       accountId,
       containerId,

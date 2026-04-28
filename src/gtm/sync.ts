@@ -308,6 +308,7 @@ export async function syncConfigToWorkspace(
       const triggerBody = {
         name: trigger.name,
         type: trigger.type,
+        eventName: trigger.eventName ? convertParameter(trigger.eventName, triggerIdMap) : undefined,
         filter: trigger.filter as tagmanager_v2.Schema$Condition[],
         customEventFilter: trigger.customEventFilter as tagmanager_v2.Schema$Condition[],
         parameter: trigger.parameter?.map(p => convertParameter(p, triggerIdMap)),
