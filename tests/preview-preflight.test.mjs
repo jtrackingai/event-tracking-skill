@@ -147,11 +147,21 @@ test('preview click helper can target later visible candidates when the first ma
     {
       async isVisible() { return true; },
       async scrollIntoViewIfNeeded() {},
+      async evaluate(fn) {
+        return fn({
+          closest() { return null; },
+        });
+      },
       async click() { clicked.push(0); },
     },
     {
       async isVisible() { return true; },
       async scrollIntoViewIfNeeded() {},
+      async evaluate(fn) {
+        return fn({
+          closest() { return null; },
+        });
+      },
       async click() { clicked.push(1); },
     },
   ];
@@ -171,4 +181,114 @@ test('preview click helper can target later visible candidates when the first ma
     'Preview click helper should be able to click a later visible candidate.',
   );
   assert.deepEqual(clicked, [1], 'Preview click helper should target the requested candidate index.');
+});
+
+test('preview click helper respects :contains text filters when choosing candidates', async () => {
+  const preview = loadPreviewModule();
+
+  const clicked = [];
+  const fakeCandidates = [
+    {
+      async isVisible() { return true; },
+      async scrollIntoViewIfNeeded() {},
+      async click() { clicked.push('wrong'); },
+      async evaluate(fn, expectedTexts) {
+        return fn({ textContent: 'Book a demo' }, expectedTexts);
+      },
+    },
+    {
+      async isVisible() { return true; },
+      async scrollIntoViewIfNeeded() {},
+      async click() { clicked.push('right'); },
+      async evaluate(fn, expectedTexts) {
+        return fn({ textContent: 'DOWNLOAD CERTIFICATE' }, expectedTexts);
+      },
+    },
+  ];
+
+  const fakePage = {
+    locator() {
+      return {
+        async count() { return fakeCandidates.length; },
+        nth(index) { return fakeCandidates[index]; },
+      };
+    },
+  };
+
+  assert.deepEqual(
+    preview.__testOnly.buildPreviewClickTargets('a:contains("DOWNLOAD CERTIFICATE")'),
+    [{ cssSelector: 'a', textMatches: ['DOWNLOAD CERTIFICATE'] }],
+    'Preview should preserve text constraints when normalizing click selectors.',
+  );
+  assert.equal(
+    await preview.__testOnly.clickVisibleMatchAt(fakePage, 'a', 0, ['DOWNLOAD CERTIFICATE']),
+    true,
+    'Preview click helper should click the first candidate whose text matches the :contains filter.',
+  );
+  assert.deepEqual(clicked, ['right']);
+});
+
+test('preview can recognize form-like custom selectors', async () => {
+  const preview = loadPreviewModule();
+
+  assert.equal(
+    preview.__testOnly.selectorLooksLikeForm('form.account-login-form:contains("Email or username")'),
+    true,
+    'Form selectors should be recognized for custom submit preview flows.',
+  );
+
+  assert.equal(
+    preview.__testOnly.selectorLooksLikeForm('a.btn-primary:contains("Continue")'),
+    false,
+    'Non-form selectors should continue using click preview flows.',
+  );
+});
+
+test('preview waitForHitCount can observe delayed submit hits', async () => {
+  const preview = loadPreviewModule();
+  const startedAt = Date.now();
+
+  const count = () => (Date.now() - startedAt >= 2200 ? 1 : 0);
+  const after = await preview.__testOnly.waitForHitCount(count, 0, 6000);
+
+  assert.equal(
+    after,
+    1,
+    'Submit-style preview waits should tolerate delayed GA4 hits instead of timing out too early.',
+  );
+});
+
+test('preview source keeps a longer wait window for custom click events', async () => {
+  const previewSource = fs.readFileSync(path.join(repoRoot, 'src', 'gtm', 'preview.ts'), 'utf8');
+
+  assert.match(
+    previewSource,
+    /const PREVIEW_CUSTOM_CLICK_WAIT_MS = 6000;/,
+    'Custom click preview flows should keep a dedicated longer wait window.',
+  );
+  assert.match(
+    previewSource,
+    /const PREVIEW_CLICK_WAIT_MS = 6000;/,
+    'Standard click preview flows should also tolerate slower GA4 hit arrival on real pages.',
+  );
+  assert.match(
+    previewSource,
+    /const PREVIEW_CLICK_RETRY_WAIT_MS = 7000;/,
+    'Retry click preview flows should keep an even longer wait window before declaring no hit.',
+  );
+});
+
+test('preview source prevents default navigation for link targets before synthetic click dispatch', async () => {
+  const previewSource = fs.readFileSync(path.join(repoRoot, 'src', 'gtm', 'preview.ts'), 'utf8');
+
+  assert.match(
+    previewSource,
+    /const preventOnce = \(evt: Event\) => \{/,
+    'Preview should install a one-shot preventDefault handler for link-like targets.',
+  );
+  assert.match(
+    previewSource,
+    /evt\.preventDefault\(\);/,
+    'Preview-safe link clicks should prevent real navigation while still dispatching click events.',
+  );
 });

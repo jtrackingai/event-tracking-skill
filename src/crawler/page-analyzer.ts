@@ -377,13 +377,6 @@ async function extractPageContent(page: Page, url: string): Promise<PageAnalysis
   return { url, ...analysis, cleanedHtml };
 }
 
-function isLoginPage(analysis: PageAnalysis): boolean {
-  return analysis.elements.some(el =>
-    el.type === 'input' &&
-    (el.inputType === 'password' || el.ariaLabel?.toLowerCase().includes('password')),
-  );
-}
-
 async function isShopifyPasswordPage(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const hasPasswordForm = !!document.querySelector(
@@ -591,18 +584,6 @@ export async function analyzeSite(
 
       const platform = await detectPlatformOnPage(p);
       const analysis = await extractPageContent(p, url);
-
-      if (isLoginPage(analysis)) {
-        skippedUrls.push(url);
-        console.log(`  Skipped (login page): ${url}`);
-        return {
-          analysis: null,
-          discoveredLinks: [],
-          wafDetected: false,
-          dataLayerEvents: [],
-          platform,
-        };
-      }
 
       const dlEvents: DataLayerEvent[] = await p.evaluate((pageUrl: string) => {
         const captured = (window as any).__dl_captured || [];

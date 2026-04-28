@@ -53,6 +53,22 @@ function elementKey(el: InteractiveElement): string {
   return `${el.type}|${el.selector}|${el.text || ''}|${el.parentSection || ''}`;
 }
 
+function pickRepresentativeHtml(group: PageGroup, groupPages: PageAnalysis[]): string | undefined {
+  const existing = group.representativeHtml?.trim();
+  if (existing && existing.length > 0) return existing;
+
+  const bestPage = [...groupPages]
+    .sort((a, b) => {
+      if (b.elements.length !== a.elements.length) {
+        return b.elements.length - a.elements.length;
+      }
+      return (b.cleanedHtml?.length || 0) - (a.cleanedHtml?.length || 0);
+    })[0];
+
+  const cleaned = bestPage?.cleanedHtml?.trim();
+  return cleaned || undefined;
+}
+
 function summarizeGroup(group: PageGroup, pages: PageAnalysis[]): GroupSummary {
   const groupPages = pages.filter(p => group.urls.includes(p.url));
 
@@ -112,7 +128,7 @@ function summarizeGroup(group: PageGroup, pages: PageAnalysis[]): GroupSummary {
     hasInfiniteScroll,
     isSPA,
     elements,
-    representativeHtml: group.representativeHtml,
+    representativeHtml: pickRepresentativeHtml(group, groupPages),
   };
 }
 

@@ -38,11 +38,13 @@ const {
 } = require(path.join(repoRoot, 'dist', 'workflow', 'mode-transition.js'));
 const { refreshWorkflowState } = require(path.join(repoRoot, 'dist', 'workflow', 'state.js'));
 const { getPageGroupsHash } = require(path.join(repoRoot, 'dist', 'crawler', 'page-analyzer.js'));
+const { buildSchemaContext } = require(path.join(repoRoot, 'dist', 'generator', 'schema-context.js'));
 const {
   buildLiveVerificationSchema,
   LIVE_PREVIEW_RESULT_FILE,
   LIVE_TRACKING_HEALTH_FILE,
 } = require(path.join(repoRoot, 'dist', 'gtm', 'live-verifier.js'));
+const { getTelemetryConsentMessage } = require(path.join(repoRoot, 'dist', 'telemetry.js'));
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'event-tracking-workflow-enhancements-'));
@@ -317,6 +319,283 @@ test('status --json and runs --json expose a run index for resumed workflows', t
   assert.equal(typeof runsPayload.modeSummary.counts.legacy, 'number');
   assert.ok(runsPayload.modeSummary, 'runs --json should include mode summary');
   assert.equal(typeof runsPayload.modeSummary.counts.legacy, 'number');
+});
+
+test('generate-gtm converts :contains selectors into descendant-safe css selectors without click text filters', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const schemaFile = path.join(artifactDir, 'event-schema.json');
+  writeJson(schemaFile, makeEventSchema([
+    makeEvent('cta_click', {
+      elementSelector: 'a.hero-link:contains("Sign up free"), button.hero-cta:contains("Try for free")',
+      pageUrlPattern: '^https://example.com/$',
+      parameters: [
+        { name: 'page_location', value: '{{Page URL}}', description: 'Current page URL' },
+        { name: 'link_text', value: '{{Click Text}}', description: 'Clicked text' },
+      ],
+    }),
+  ]));
+
+  const confirmResult = runCli(['confirm-schema', schemaFile, '--yes']);
+  assert.equal(confirmResult.status, 0, confirmResult.combinedOutput);
+
+  const generateResult = runCli(['generate-gtm', schemaFile, '--measurement-id', 'G-TEST1234']);
+  assert.equal(generateResult.status, 0, generateResult.combinedOutput);
+
+  const config = readJson(path.join(artifactDir, 'gtm-config.json'));
+  const trigger = config.containerVersion.trigger.find(item => item.name.includes('cta_click'));
+  assert.ok(trigger, 'click trigger should be generated');
+  assert.equal(trigger.type, 'click');
+
+  const cssSelectorFilter = trigger.filter.find(item => item.type === 'cssSelector');
+  assert.ok(cssSelectorFilter, 'cssSelector filter should exist');
+  assert.equal(
+    cssSelectorFilter.parameter[1].value,
+    ':is(a.hero-link, a.hero-link *), :is(button.hero-cta, button.hero-cta *)',
+  );
+
+  const clickTextFilter = trigger.filter.find(item =>
+    item.type === 'matchRegex'
+    && item.parameter?.[0]?.value === '{{Click Text}}'
+  );
+  assert.equal(clickTextFilter, undefined, 'Click triggers should not depend on Click Text when :contains is present.');
+  assert.ok(config.requiredBuiltInVariables.includes('CLICK_ELEMENT'));
+  assert.ok(config.requiredBuiltInVariables.includes('CLICK_TEXT'));
+});
+
+test('generate-gtm makes non-anchor click selectors descendant-safe too', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const schemaFile = path.join(artifactDir, 'event-schema.json');
+  writeJson(schemaFile, makeEventSchema([
+    makeEvent('submit_span_click', {
+      triggerType: 'click',
+      elementSelector: 'span.contract-sales-btn:contains("Submit")',
+      pageUrlPattern: '^https://example.com/form$',
+      parameters: [
+        { name: 'page_location', value: '{{Page URL}}', description: 'Current page URL' },
+        { name: 'link_text', value: '{{Click Text}}', description: 'Clicked text' },
+      ],
+    }),
+  ]));
+
+  const confirmResult = runCli(['confirm-schema', schemaFile, '--yes']);
+  assert.equal(confirmResult.status, 0, confirmResult.combinedOutput);
+
+  const generateResult = runCli(['generate-gtm', schemaFile, '--measurement-id', 'G-TEST1234']);
+  assert.equal(generateResult.status, 0, generateResult.combinedOutput);
+
+  const config = readJson(path.join(artifactDir, 'gtm-config.json'));
+  const trigger = config.containerVersion.trigger.find(item => item.name.includes('submit_span_click'));
+  assert.ok(trigger, 'click trigger should be generated');
+
+  const cssSelectorFilter = trigger.filter.find(item => item.type === 'cssSelector');
+  assert.ok(cssSelectorFilter, 'cssSelector filter should exist');
+  assert.equal(
+    cssSelectorFilter.parameter[1].value,
+    ':is(span.contract-sales-btn, span.contract-sales-btn *)',
+  );
+});
+
+test('generate-gtm creates listener-backed custom event tags for click-like custom events', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const schemaFile = path.join(artifactDir, 'event-schema.json');
+  writeJson(schemaFile, makeEventSchema([
+    makeEvent('download_asset_click', {
+      triggerType: 'custom',
+      elementSelector: 'a:contains("DOWNLOAD CERTIFICATE")',
+      pageUrlPattern: '^https://example.com/security$',
+      parameters: [
+        { name: 'page_location', value: '{{Page URL}}', description: 'Current page URL' },
+        { name: 'link_text', value: '{{Click Text}}', description: 'Clicked text' },
+        { name: 'link_url', value: '{{Click URL}}', description: 'Clicked url' },
+        { name: 'link_classes', value: '{{Click Classes}}', description: 'Clicked classes' },
+      ],
+    }),
+  ]));
+
+  const confirmResult = runCli(['confirm-schema', schemaFile, '--yes']);
+  assert.equal(confirmResult.status, 0, confirmResult.combinedOutput);
+
+  const generateResult = runCli(['generate-gtm', schemaFile, '--measurement-id', 'G-TEST1234']);
+  assert.equal(generateResult.status, 0, generateResult.combinedOutput);
+
+  const config = readJson(path.join(artifactDir, 'gtm-config.json'));
+  const listenerTag = config.containerVersion.tag.find(item => item.name.includes('Listener - download_asset_click'));
+  const ga4Tag = config.containerVersion.tag.find(item => item.name.includes('GA4 - download_asset_click - custom'));
+  const customTrigger = config.containerVersion.trigger.find(item => item.name.includes('Trigger - download_asset_click') && item.type === 'customEvent');
+  const linkTextVar = config.containerVersion.variable.find(item => item.name === '[JTracking] link_text');
+  const linkUrlVar = config.containerVersion.variable.find(item => item.name === '[JTracking] link_url');
+  const linkClassesVar = config.containerVersion.variable.find(item => item.name === '[JTracking] link_classes');
+
+  assert.ok(listenerTag, 'custom click listener tag should be generated');
+  assert.equal(listenerTag.type, 'html');
+  assert.ok(linkTextVar, 'custom click listener should create link_text data layer variable');
+  assert.ok(linkUrlVar, 'custom click listener should create link_url data layer variable');
+  assert.ok(linkClassesVar, 'custom click listener should create link_classes data layer variable');
+  const htmlValue = listenerTag.parameter.find(item => item.key === 'html').value;
+  assert.match(htmlValue, /dataLayer\.push\(\{/);
+  assert.match(htmlValue, /link_text: text/);
+  assert.match(htmlValue, /link_url: href/);
+  assert.match(htmlValue, /link_classes: className/);
+  assert.doesNotMatch(htmlValue, /DOWNLOAD CERTIFICATE/);
+  assert.doesNotMatch(htmlValue, /item\.texts/);
+  assert.doesNotMatch(htmlValue, /textMatch/);
+  assert.ok(customTrigger, 'custom event trigger should be generated');
+  assert.ok(ga4Tag, 'GA4 event tag should be generated for the custom event');
+  const eventParameters = ga4Tag.parameter.find(item => item.key === 'eventParameters');
+  const values = eventParameters.list.map(item => item.map.find(entry => entry.key === 'value').value);
+  assert.ok(values.includes('{{Page URL}}'));
+  assert.ok(values.includes('{{[JTracking] link_text}}'));
+  assert.ok(values.includes('{{[JTracking] link_url}}'));
+  assert.ok(values.includes('{{[JTracking] link_classes}}'));
+});
+
+test('generate-gtm creates submit listeners that map form built-ins onto data layer variables', t => {
+  const artifactDir = makeTempDir();
+  t.after(() => fs.rmSync(artifactDir, { recursive: true, force: true }));
+
+  const schemaFile = path.join(artifactDir, 'event-schema.json');
+  writeJson(schemaFile, makeEventSchema([
+    makeEvent('register_form_submit', {
+      triggerType: 'custom',
+      elementSelector: 'form.account-register-form:contains("Work email")',
+      pageUrlPattern: '^https://example.com/auth/register$',
+      parameters: [
+        { name: 'page_location', value: '{{Page URL}}', description: 'Current page URL' },
+        { name: 'form_text', value: '{{Form Text}}', description: 'Form text' },
+        { name: 'form_url', value: '{{Form URL}}', description: 'Form url' },
+        { name: 'form_classes', value: '{{Form Classes}}', description: 'Form classes' },
+      ],
+    }),
+  ]));
+
+  const confirmResult = runCli(['confirm-schema', schemaFile, '--yes']);
+  assert.equal(confirmResult.status, 0, confirmResult.combinedOutput);
+
+  const generateResult = runCli(['generate-gtm', schemaFile, '--measurement-id', 'G-TEST1234']);
+  assert.equal(generateResult.status, 0, generateResult.combinedOutput);
+
+  const config = readJson(path.join(artifactDir, 'gtm-config.json'));
+  const listenerTag = config.containerVersion.tag.find(item => item.name.includes('Listener - register_form_submit'));
+  const ga4Tag = config.containerVersion.tag.find(item => item.name.includes('GA4 - register_form_submit - custom'));
+  const formTextVar = config.containerVersion.variable.find(item => item.name === '[JTracking] form_text');
+  const formUrlVar = config.containerVersion.variable.find(item => item.name === '[JTracking] form_url');
+  const formClassesVar = config.containerVersion.variable.find(item => item.name === '[JTracking] form_classes');
+
+  assert.ok(listenerTag, 'custom submit listener tag should be generated');
+  assert.ok(formTextVar, 'custom submit listener should create form_text data layer variable');
+  assert.ok(formUrlVar, 'custom submit listener should create form_url data layer variable');
+  assert.ok(formClassesVar, 'custom submit listener should create form_classes data layer variable');
+  const htmlValue = listenerTag.parameter.find(item => item.key === 'html').value;
+  assert.match(htmlValue, /listenerMode = "submit"/);
+  assert.match(htmlValue, /document\.addEventListener\(listenerMode/);
+  assert.match(htmlValue, /evt\.preventDefault\(\)/);
+  assert.match(htmlValue, /form_text: text/);
+  assert.match(htmlValue, /form_url: action/);
+  assert.match(htmlValue, /form_classes: formClassName/);
+
+  const eventParameters = ga4Tag.parameter.find(item => item.key === 'eventParameters');
+  const values = eventParameters.list.map(item => item.map.find(entry => entry.key === 'value').value);
+  assert.ok(values.includes('{{Page URL}}'));
+  assert.ok(values.includes('{{[JTracking] form_text}}'));
+  assert.ok(values.includes('{{[JTracking] form_url}}'));
+  assert.ok(values.includes('{{[JTracking] form_classes}}'));
+});
+
+test('build-schema-context auto-fills representativeHtml from the richest page when missing', () => {
+  const analysis = makeConfirmedSiteAnalysis();
+  analysis.pages = [
+    {
+      url: 'https://example.com/pricing',
+      title: 'Pricing',
+      description: 'Pricing page',
+      elements: [
+        { type: 'link', selector: 'a.cta', text: 'Book demo', href: 'https://example.com/demo', dataAttributes: {}, isVisible: true },
+        { type: 'form', selector: 'form.pricing-form', formAction: '/submit', formMethod: 'post', dataAttributes: {}, isVisible: true },
+      ],
+      hasSearchForm: false,
+      hasVideoPlayer: false,
+      hasInfiniteScroll: false,
+      isSPA: false,
+      sectionClasses: ['pricing'],
+      cleanedHtml: '<main><form class="pricing-form"><input name="email" /></form></main>',
+    },
+    {
+      url: 'https://example.com/contact',
+      title: 'Contact',
+      description: 'Contact page',
+      elements: [
+        { type: 'link', selector: 'a.contact-link', text: 'Contact', href: 'https://example.com/contact', dataAttributes: {}, isVisible: true },
+      ],
+      hasSearchForm: false,
+      hasVideoPlayer: false,
+      hasInfiniteScroll: false,
+      isSPA: false,
+      sectionClasses: ['contact'],
+      cleanedHtml: '<main><a href="/contact">Contact</a></main>',
+    },
+  ];
+  analysis.pageGroups = [
+    {
+      name: 'conversion_pages',
+      displayName: 'Conversion Pages',
+      description: 'Conversion pages',
+      contentType: 'marketing',
+      urls: ['https://example.com/pricing', 'https://example.com/contact'],
+      urlPattern: '^/(pricing|contact)$',
+      representativeHtml: '',
+    },
+  ];
+
+  const context = buildSchemaContext(analysis);
+  assert.equal(context.groups.length, 1);
+  assert.equal(
+    context.groups[0].representativeHtml,
+    '<main><form class="pricing-form"><input name="email" /></form></main>',
+  );
+});
+
+test('health-audit schema generator can recommend form_submit events from analyzed auth pages', () => {
+  const analysis = makeConfirmedSiteAnalysis();
+  analysis.pages = [
+    {
+      url: 'https://example.com/auth/login',
+      title: 'Log in',
+      description: 'Login page',
+      elements: [
+        { type: 'form', selector: 'form.login-form', formAction: '/session', formMethod: 'post', dataAttributes: {}, isVisible: true },
+        { type: 'input', selector: 'input[name="email"]', inputType: 'email', ariaLabel: 'email', dataAttributes: {}, isVisible: true },
+        { type: 'input', selector: 'input[name="password"]', inputType: 'password', ariaLabel: 'password', dataAttributes: {}, isVisible: true },
+        { type: 'button', selector: 'button:contains("Log in")', text: 'Log in', dataAttributes: {}, isVisible: true },
+      ],
+      hasSearchForm: false,
+      hasVideoPlayer: false,
+      hasInfiniteScroll: false,
+      isSPA: false,
+      sectionClasses: ['login'],
+      cleanedHtml: '<main><form class="login-form"><input type="email" /><input type="password" /><button>Log in</button></form></main>',
+    },
+  ];
+  analysis.pageGroups = [
+    {
+      name: 'auth_pages',
+      displayName: 'Auth Pages',
+      description: 'Authentication',
+      contentType: 'marketing',
+      urls: ['https://example.com/auth/login'],
+      urlPattern: '^/auth/login$',
+      representativeHtml: '',
+    },
+  ];
+
+  const context = buildSchemaContext(analysis);
+  assert.equal(context.groups[0].elements.some(item => item.type === 'form'), true);
+  assert.match(context.groups[0].representativeHtml, /login-form/);
 });
 
 test('status defaults to primary artifacts and expands internal metadata only in verbose mode', t => {
@@ -956,6 +1235,7 @@ test('run-new-setup blocks non-interactive workflow when telemetry consent is un
 
   const artifactDir = path.join(outputRoot, 'www_jtracking_ai');
   const missingConsentFile = path.join(outputRoot, 'missing-telemetry.json');
+  const consentMessage = getTelemetryConsentMessage();
   const result = runCli([
     'run-new-setup',
     'https://www.jtracking.ai',
@@ -967,12 +1247,11 @@ test('run-new-setup blocks non-interactive workflow when telemetry consent is un
 
   assert.notEqual(result.status, 0, result.combinedOutput);
   assert.match(result.combinedOutput, /Telemetry consent gate blocked run-new-setup/);
-  assert.match(result.combinedOutput, /collect limited anonymous usage data while you use the tool/i);
   assert.match(result.combinedOutput, /Run this command in an interactive terminal and answer the diagnostics consent prompt/);
-  assert.match(result.combinedOutput, /only used for product optimization and reliability/i);
-  assert.match(result.combinedOutput, /If you choose yes, we save that choice in local config and continue with diagnostics enabled for future runs unless you change it/i);
-  assert.match(result.combinedOutput, /If you choose no, we save that choice in local config and continue the workflow normally without diagnostics/i);
-  assert.match(result.combinedOutput, /site hostname and high-level workflow metadata, which may reveal the domain you worked on/i);
+  assert.match(
+    result.combinedOutput,
+    new RegExp(`The prompt says: \"${consentMessage.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\"`),
+  );
   assert.doesNotMatch(result.combinedOutput, /environment variable|env override|pre-create telemetry\.json/i);
   assert.equal(fs.existsSync(path.join(artifactDir, 'workflow-state.json')), false);
 });
